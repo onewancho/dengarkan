@@ -85,6 +85,8 @@ export default function QueuePage() {
     ? parseTrackMeta(currentTrack.title, currentTrack.channelName, currentTrack.durationSeconds)
     : null;
 
+  const totalTracks = (currentTrack ? 1 : 0) + queue.length;
+
   return (
     <div className="w-full pt-4 pb-36">
       {/* Header */}
@@ -96,7 +98,7 @@ export default function QueuePage() {
                 <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
                 <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
               </svg>
-              {queue.length} lagu dalam antrean
+              {totalTracks} lagu dalam antrean
             </div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
               Antrean Pemutaran
@@ -162,11 +164,14 @@ export default function QueuePage() {
         </div>
       </div>
 
-      {/* ── Now Playing Section ──────────────────────────────────────────── */}
+      {/* ── Now Playing / Item #1 ────────────────────────────────────────── */}
       {currentTrack && currentMeta && (
         <div className="mb-4">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-[#8E8E93] mb-2">Sedang Diputar</p>
-          <div className="flex items-center gap-3 p-3.5 rounded-2xl bg-[#39FF14]/10 border border-[#39FF14]/30">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-[#39FF14] mb-2 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#39FF14] animate-ping" />
+            #1 Sedang Diputar
+          </p>
+          <div className="flex items-center gap-3 p-3.5 rounded-2xl bg-[#39FF14]/10 border border-[#39FF14]/30 shadow-lg shadow-[#39FF14]/5">
             <div className="relative w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-[#161619] border border-white/10">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -185,10 +190,15 @@ export default function QueuePage() {
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <h3 className="text-sm font-bold text-[#39FF14] truncate leading-tight">
-                {currentMeta.title}
-              </h3>
-              <p className="text-xs text-white/80 font-medium truncate mt-0.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-[#39FF14] text-black">
+                  #1 Diputar
+                </span>
+                <h3 className="text-sm font-bold text-[#39FF14] truncate leading-tight">
+                  {currentMeta.title}
+                </h3>
+              </div>
+              <p className="text-xs text-white/90 font-medium truncate mt-0.5">
                 {currentMeta.artist}
               </p>
               <p className="text-[11px] text-[#8E8E93] truncate mt-0.5">
@@ -202,12 +212,12 @@ export default function QueuePage() {
       {/* ── Queue List ────────────────────────────────────────────────── */}
       {queue.length > 0 && (
         <p className="text-[10px] font-bold uppercase tracking-widest text-[#8E8E93] mb-2">
-          Selanjutnya · {queue.length} lagu
+          Selanjutnya dalam Antrean · {queue.length} lagu
         </p>
       )}
 
       <div ref={listRef} className="space-y-1">
-        {queue.length === 0 ? (
+        {!currentTrack && queue.length === 0 ? (
           <div className="text-center py-20">
             <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[#161619] border border-white/5 flex items-center justify-center">
               <svg className="w-7 h-7 text-[#8E8E93]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -218,6 +228,13 @@ export default function QueuePage() {
             <p className="text-sm text-[#8E8E93] font-medium">Antrean kosong</p>
             <p className="text-xs text-[#8E8E93]/60 mt-1.5">
               Cari dan tambahkan lagu dari tab <strong className="text-[#39FF14]">Cari</strong>
+            </p>
+          </div>
+        ) : queue.length === 0 ? (
+          <div className="text-center py-8 px-4 rounded-2xl border border-dashed border-white/10 bg-white/[0.02]">
+            <p className="text-xs text-[#8E8E93] font-medium">Belum ada lagu berikutnya dalam antrean</p>
+            <p className="text-[11px] text-[#8E8E93]/60 mt-1">
+              Tambahkan lagu berikutnya dengan tombol <span className="text-[#39FF14] font-semibold">+ Antrean</span> di halaman Cari
             </p>
           </div>
         ) : (
@@ -255,7 +272,7 @@ export default function QueuePage() {
 
                 {/* Number */}
                 <span className="text-xs text-[#8E8E93] tabular-nums w-5 text-center flex-shrink-0 font-medium">
-                  {idx + 1}
+                  {currentTrack ? idx + 2 : idx + 1}
                 </span>
 
                 {/* Thumbnail */}

@@ -58,7 +58,11 @@ export function SearchView() {
   }, [query, runSearch]);
 
   const handleAddToQueue = (track: SearchResult) => {
-    addToQueue(track);
+    if (!currentTrack) {
+      void playTrack(track);
+    } else {
+      addToQueue(track);
+    }
     setJustAdded(track.videoId);
     setTimeout(() => setJustAdded(null), 1500);
   };

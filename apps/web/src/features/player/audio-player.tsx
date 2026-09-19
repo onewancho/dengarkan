@@ -17,7 +17,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { usePlayer } from "./context";
-import type { RepeatMode } from "./use-audio-engine";
+import { type RepeatMode, getCanonicalDuration } from "./use-audio-engine";
 import { parseTrackMeta } from "@/lib/track-meta";
 
 function fmt(secs: number): string {
@@ -223,10 +223,12 @@ export function AudioPlayer() {
       const audio = audioRef.current;
       if (audio) {
         const cur = (audio && isFinite(audio.currentTime)) ? audio.currentTime : 0;
-        const dur = (audio && isFinite(audio.duration) && audio.duration > 0)
-          ? audio.duration
-          : (currentTrack?.durationSeconds || duration || 0);
-        const pct = dur > 0 ? (cur / dur) * 100 : 0;
+        const metaDur = (currentTrack?.durationSeconds && currentTrack.durationSeconds > 0)
+          ? currentTrack.durationSeconds
+          : (duration || 0);
+        const dur = getCanonicalDuration(metaDur, audio?.duration);
+        const clampedCur = dur > 0 ? Math.min(cur, dur) : cur;
+        const pct = dur > 0 ? (clampedCur / dur) * 100 : 0;
 
         // Mini progress bar width
         if (miniBarRef.current) {
@@ -235,12 +237,12 @@ export function AudioPlayer() {
 
         // Full player scrubber & timestamps (only update when user is not scrubbing)
         if (!dragging.current && fullScrubberRef.current) {
-          fullScrubberRef.current.value = String(cur);
+          fullScrubberRef.current.value = String(clampedCur);
           fullScrubberRef.current.max = String(dur > 0 ? dur : 100);
           fullScrubberRef.current.style.setProperty("--progress", `${pct}%`);
         }
         if (!dragging.current && fullCurTimeRef.current) {
-          fullCurTimeRef.current.textContent = fmt(cur);
+          fullCurTimeRef.current.textContent = fmt(clampedCur);
         }
         if (fullDurTimeRef.current) {
           fullDurTimeRef.current.textContent = fmt(dur);
@@ -259,19 +261,20 @@ export function AudioPlayer() {
     return () => {
       if (animId !== null) cancelAnimationFrame(animId);
     };
-  }, [isPlaying, playerState, audioRef, duration]);
+  }, [isPlaying, playerState, audioRef, duration, currentTrack?.durationSeconds]);
 
   if (!currentTrack) return null;
+
+  const metaDur = (currentTrack.durationSeconds && currentTrack.durationSeconds > 0)
+    ? currentTrack.durationSeconds
+    : (isFinite(duration) && duration > 0 ? duration : 0);
+  const effectiveDuration = getCanonicalDuration(metaDur, audioRef.current?.duration);
 
   const meta = parseTrackMeta(
     currentTrack.title,
     currentTrack.channelName,
-    duration || currentTrack.durationSeconds
+    effectiveDuration
   );
-
-  const effectiveDuration = (isFinite(duration) && duration > 0)
-    ? duration
-    : (currentTrack.durationSeconds || 0);
 
   const isLoading   = playerState === "loading" || playerState === "refreshing";
   const isError     = playerState === "error";
@@ -684,7 +687,7 @@ export function AudioPlayer() {
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-semibold text-white">Antrean Pemutaran</h3>
                   <span className="text-xs text-[#39FF14] bg-[#39FF14]/10 px-2 py-0.5 rounded-full font-medium">
-                    {queue.length} lagu
+                    {(currentTrack ? 1 : 0) + queue.length} lagu
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -707,52 +710,87 @@ export function AudioPlayer() {
               </div>
 
               <div className="flex-1 overflow-y-auto py-2 space-y-1 scrollbar-thin">
-                {queue.length === 0 ? (
+                {!currentTrack && queue.length === 0 ? (
                   <div className="text-center py-16 text-[#8E8E93]">
                     <p className="text-sm">Antrean kosong</p>
                     <p className="text-xs mt-1 opacity-60">Tambahkan lagu dari daftar putar atau pencarian</p>
                   </div>
                 ) : (
-                  queue.map((item, idx) => {
-                    const qMeta = parseTrackMeta(item.title, item.channelName, item.durationSeconds);
-                    return (
-                      <div
-                        key={`${item.videoId}-${idx}`}
-                        className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-default cursor-pointer"
-                        onClick={() => playFromQueue(idx)}
-                      >
+                  <>
+                    {/* Item 1: Lagu yang sedang diputar */}
+                    {currentTrack && (
+                      <div className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-[#39FF14]/10 border border-[#39FF14]/30 shadow-sm mb-1">
                         <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                          <span className="text-xs text-[#8E8E93] tabular-nums w-4">
-                            {idx + 1}
+                          <span className="flex-shrink-0 w-4 flex items-center justify-center">
+                            {isPlaying ? (
+                              <div className="w-3.5 h-3 flex items-end gap-0.5">
+                                <span className="w-0.5 h-3 bg-[#39FF14] animate-pulse" />
+                                <span className="w-0.5 h-1.5 bg-[#39FF14] animate-pulse delay-75" />
+                                <span className="w-0.5 h-2 bg-[#39FF14] animate-pulse delay-150" />
+                              </div>
+                            ) : (
+                              <span className="text-xs font-bold text-[#39FF14] tabular-nums">1</span>
+                            )}
                           </span>
                           <div className="min-w-0 flex-1">
-                            <p className="text-xs font-semibold text-white truncate">
-                              {qMeta.title}
-                            </p>
-                            <p className="text-[11px] text-[#39FF14] font-medium truncate">
-                              {qMeta.artist}
-                            </p>
-                            <p className="text-[10px] text-[#8E8E93] truncate">
-                              {qMeta.channelInfo}
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-[#39FF14] text-black">
+                                Diputar
+                              </span>
+                              <p className="text-xs font-semibold text-[#39FF14] truncate">
+                                {meta.title}
+                              </p>
+                            </div>
+                            <p className="text-[11px] text-white/80 font-medium truncate mt-0.5">
+                              {meta.artist}
                             </p>
                           </div>
                         </div>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            removeFromQueue(idx);
-                          }}
-                          className="p-1.5 rounded-lg text-[#8E8E93] hover:text-[#FF3B30] hover:bg-white/5 transition-default"
-                          aria-label="Hapus dari antrean"
-                        >
-                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <line x1="18" y1="6" x2="6" y2="18" />
-                            <line x1="6" y1="6" x2="18" y2="18" />
-                          </svg>
-                        </button>
                       </div>
-                    );
-                  })
+                    )}
+
+                    {/* Items 2..N: Antrean Selanjutnya */}
+                    {queue.map((item, idx) => {
+                      const qMeta = parseTrackMeta(item.title, item.channelName, item.durationSeconds);
+                      return (
+                        <div
+                          key={`${item.videoId}-${idx}`}
+                          className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-default cursor-pointer"
+                          onClick={() => playFromQueue(idx)}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <span className="text-xs text-[#8E8E93] tabular-nums w-4">
+                              {idx + 2}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-semibold text-white truncate">
+                                {qMeta.title}
+                              </p>
+                              <p className="text-[11px] text-[#39FF14] font-medium truncate">
+                                {qMeta.artist}
+                              </p>
+                              <p className="text-[10px] text-[#8E8E93] truncate">
+                                {qMeta.channelInfo}
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeFromQueue(idx);
+                            }}
+                            className="p-1.5 rounded-lg text-[#8E8E93] hover:text-[#FF3B30] hover:bg-white/5 transition-default"
+                            aria-label="Hapus dari antrean"
+                          >
+                            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <line x1="18" y1="6" x2="6" y2="18" />
+                              <line x1="6" y1="6" x2="18" y2="18" />
+                            </svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </>
                 )}
               </div>
             </div>

@@ -52,6 +52,24 @@ import { useMediaSession } from "./use-media-session";
 /** A track that can be played — either a search result or a queue item */
 export type PlayableTrack = SearchResult | QueueTrack;
 
+/**
+ * Safely resolves the canonical duration for a track.
+ * YouTube streams often suffer from browser timescale decoding bugs (e.g. 2x duration on AAC-HE/DASH).
+ * If a verified metadata duration is available, it is prioritized over erroneous browser audio.duration.
+ */
+export function getCanonicalDuration(metaDuration?: number, audioDuration?: number): number {
+  const meta = isFinite(metaDuration as number) && (metaDuration as number) > 0 ? (metaDuration as number) : 0;
+  const audio = isFinite(audioDuration as number) && (audioDuration as number) > 0 ? (audioDuration as number) : 0;
+
+  if (meta > 0) {
+    if (audio > 0 && Math.abs(audio - meta) / meta < 0.15) {
+      return audio;
+    }
+    return meta;
+  }
+  return audio;
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type RepeatMode = "none" | "one" | "all";
@@ -350,9 +368,8 @@ export function useAudioEngine(): AudioEngine {
   const seek = useCallback((seconds: number) => {
     const audio = audioRef.current;
     if (!audio || !isFinite(seconds)) return;
-    const dur = isFinite(audio.duration) && audio.duration > 0
-      ? audio.duration
-      : (currentTrackRef.current?.durationSeconds || Infinity);
+    const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
+    const dur = getCanonicalDuration(meta, audio.duration);
 
     // If seeking to or within 0.5s of the end (or past the end), advance to next track!
     if (isFinite(dur) && dur > 0 && seconds >= dur - 0.5) {
@@ -548,13 +565,15 @@ export function useAudioEngine(): AudioEngine {
     };
 
     const onLoadedMetadata = () => {
-      setDuration(isFinite(audio.duration) ? audio.duration : 0);
+      const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
+      const canonical = getCanonicalDuration(meta, audio.duration);
+      if (canonical > 0) setDuration(canonical);
     };
 
     const onDurationChange = () => {
-      if (isFinite(audio.duration) && audio.duration > 0) {
-        setDuration(audio.duration);
-      }
+      const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
+      const canonical = getCanonicalDuration(meta, audio.duration);
+      if (canonical > 0) setDuration(canonical);
     };
 
     // progress event fires as the browser buffers ahead
@@ -571,7 +590,8 @@ export function useAudioEngine(): AudioEngine {
     const onTimeUpdate = () => {
       if (isAdvancingRef.current) return;
       const cur = audio.currentTime;
-      const dur = audio.duration;
+      const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
+      const dur = getCanonicalDuration(meta, audio.duration);
       if (isFinite(dur) && dur > 0 && cur >= dur - 0.35) {
         void advanceNextRef.current();
       }

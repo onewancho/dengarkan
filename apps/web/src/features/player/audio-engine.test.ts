@@ -97,6 +97,19 @@ function shouldAdvanceOnWatchdog(currentTime: number, duration: number): boolean
   return isFinite(duration) && duration > 0 && currentTime >= duration - 0.35;
 }
 
+function getCanonicalDuration(metaDuration?: number, audioDuration?: number): number {
+  const meta = isFinite(metaDuration as number) && (metaDuration as number) > 0 ? (metaDuration as number) : 0;
+  const audio = isFinite(audioDuration as number) && (audioDuration as number) > 0 ? (audioDuration as number) : 0;
+
+  if (meta > 0) {
+    if (audio > 0 && Math.abs(audio - meta) / meta < 0.15) {
+      return audio;
+    }
+    return meta;
+  }
+  return audio;
+}
+
 // ── Queue reducer (mirrored from use-audio-engine.ts) ────────────────────────
 
 type PlayableTrack = {
@@ -495,3 +508,33 @@ describe("Audio Engine — previous track decision", () => {
     assert.equal(shouldRestart, false); // 3 does NOT restart, goes back
   });
 });
+
+describe("Audio Engine — getCanonicalDuration", () => {
+  it("rejects 2x doubled browser duration when metadata duration is known", () => {
+    // Marshmello - Silence: 187s (3:07). Browser reports ~374s (6:14) due to timescale bug
+    const metaDuration = 187;
+    const buggedAudioDuration = 373.74;
+    const result = getCanonicalDuration(metaDuration, buggedAudioDuration);
+    assert.equal(result, 187);
+    assert.equal(fmt(result), "3:07");
+  });
+
+  it("accepts browser duration if close to metadata duration (within 15%)", () => {
+    const metaDuration = 187;
+    const closeAudioDuration = 187.45;
+    const result = getCanonicalDuration(metaDuration, closeAudioDuration);
+    assert.equal(result, 187.45);
+  });
+
+  it("uses metadata duration if browser duration is 0 or NaN", () => {
+    assert.equal(getCanonicalDuration(187, 0), 187);
+    assert.equal(getCanonicalDuration(187, NaN), 187);
+    assert.equal(getCanonicalDuration(187, undefined), 187);
+  });
+
+  it("uses browser duration if metadata duration is absent", () => {
+    assert.equal(getCanonicalDuration(0, 187), 187);
+    assert.equal(getCanonicalDuration(undefined, 187), 187);
+  });
+});
+

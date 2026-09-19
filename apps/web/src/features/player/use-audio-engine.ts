@@ -75,9 +75,10 @@ export interface AudioEngineState {
 
 export interface AudioEngineActions {
   audioRef:        React.RefObject<HTMLAudioElement | null>;
+  loadTrack:       (track: PlayableTrack) => Promise<void>;       // resolve + play
   playTrack:       (track: PlayableTrack, resetQueue?: boolean) => Promise<void>;
   playPlaylist:    (tracks: PlayableTrack[], startIndex?: number) => Promise<void>;
-  loadTrack:       (track: PlayableTrack) => Promise<void>;       // resolve + play
+  playFromQueue:   (index: number) => Promise<void>;
   pause:           () => void;
   play:            () => void;
   toggle:          () => void;
@@ -241,13 +242,23 @@ export function useAudioEngine(): AudioEngine {
   const playerStateRef   = useRef<PlayerState>("idle");
   const repeatModeRef    = useRef<RepeatMode>("none");
   const shuffleOnRef     = useRef(false);     // mirrors queueState.shuffleOn for event handlers
+  const queueStateRef    = useRef(queueState);
   const refreshingRef    = useRef(false);
+
+  // Sync refs synchronously every render to prevent any stale closures
+  currentTrackRef.current  = currentTrack;
+  currentStreamRef.current = currentStream;
+  playerStateRef.current   = playerState;
+  repeatModeRef.current    = repeatMode;
+  shuffleOnRef.current     = queueState.shuffleOn;
+  queueStateRef.current    = queueState;
 
   useEffect(() => { currentTrackRef.current  = currentTrack;  }, [currentTrack]);
   useEffect(() => { currentStreamRef.current = currentStream; }, [currentStream]);
   useEffect(() => { playerStateRef.current   = playerState;   }, [playerState]);
   useEffect(() => { repeatModeRef.current    = repeatMode;    }, [repeatMode]);
   useEffect(() => { shuffleOnRef.current     = queueState.shuffleOn; }, [queueState.shuffleOn]);
+  useEffect(() => { queueStateRef.current    = queueState;    }, [queueState]);
 
   // ── Create the audio element once ─────────────────────────────────────────
 
@@ -400,7 +411,7 @@ export function useAudioEngine(): AudioEngine {
 
   // ── Navigation ────────────────────────────────────────────────────────────
 
-  const next = useCallback(() => {
+  const advanceNext = useCallback(async () => {
     const current   = currentTrackRef.current;
     const repeat    = repeatModeRef.current;
     const shuffleOn = shuffleOnRef.current;
@@ -408,39 +419,98 @@ export function useAudioEngine(): AudioEngine {
     // repeat=one → restart current track
     if (repeat === "one" && current) {
       const audio = audioRef.current;
-      if (audio) { audio.currentTime = 0; audio.play().catch(console.error); }
+      if (audio) {
+        audio.currentTime = 0;
+        try {
+          await audio.play();
+        } catch (e) {
+          console.error("Failed to replay track in repeat=one", e);
+        }
+      }
       return;
     }
 
-    dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
-  }, []);
+    const { queue, history } = queueStateRef.current;
 
-  const previous = useCallback(() => {
+    if (queue.length === 0) {
+      if (repeat === "all") {
+        const full = current
+          ? [...[...history].reverse(), current]
+          : [...history].reverse();
+        if (full.length > 0) {
+          const nextTrack = { ...full[0] };
+          dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
+          await loadTrack(nextTrack);
+          return;
+        }
+      }
+      dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
+      setPlayerState("idle");
+      return;
+    }
+
+    let idx = 0;
+    if (shuffleOn) {
+      idx = Math.floor(Math.random() * queue.length);
+    }
+    const nextTrack = queue[idx];
+
+    dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
+    await loadTrack(nextTrack);
+  }, [loadTrack]);
+
+  const advancePrev = useCallback(async () => {
     const audio = audioRef.current;
     // If >3s played, restart rather than go back
-    if (audio && audio.currentTime > 3) { audio.currentTime = 0; return; }
-    dispatchQueue({ type: "ADVANCE_PREV", current: currentTrackRef.current });
-  }, []);
-
-  // ── React to queue navigation (ADVANCE_NEXT / ADVANCE_PREV) ──────────────
-
-  useEffect(() => {
-    const track = queueState.nextTrack;
-    let cancelled = false;
-
-    queueMicrotask(() => {
-      if (cancelled) return;
-      if (track) {
-        void loadTrack(track);
-      } else if (playerStateRef.current === "playing" || playerStateRef.current === "buffering") {
-        setPlayerState("idle");
+    if (audio && audio.currentTime > 3) {
+      audio.currentTime = 0;
+      try {
+        await audio.play();
+      } catch (e) {
+        console.error("Failed to restart track", e);
       }
+      return;
+    }
+
+    const { history } = queueStateRef.current;
+    if (history.length === 0) return;
+
+    const prevTrack = history[0];
+    const current = currentTrackRef.current;
+
+    dispatchQueue({ type: "ADVANCE_PREV", current });
+    await loadTrack(prevTrack);
+  }, [loadTrack]);
+
+  const playFromQueue = useCallback(async (index: number) => {
+    const { queue, history } = queueStateRef.current;
+    if (index < 0 || index >= queue.length) return;
+    const target = queue[index];
+    const current = currentTrackRef.current;
+
+    const newQueue = queue.slice(index + 1);
+    const prevInQueue = queue.slice(0, index);
+    const newHistory = current
+      ? [current, ...prevInQueue.reverse(), ...history].slice(0, HISTORY_MAX)
+      : [...prevInQueue.reverse(), ...history].slice(0, HISTORY_MAX);
+
+    dispatchQueue({
+      type: "LOAD_PLAYLIST",
+      tracks: [...[...newHistory].reverse(), target, ...newQueue],
+      startIndex: newHistory.length,
     });
 
-    return () => {
-      cancelled = true;
-    };
-  }, [queueState.nextTrack, loadTrack]);
+    await loadTrack(target);
+  }, [loadTrack]);
+
+  const next = advanceNext;
+  const previous = advancePrev;
+
+  const advanceNextRef = useRef(advanceNext);
+  advanceNextRef.current = advanceNext;
+
+  const advancePrevRef = useRef(advancePrev);
+  advancePrevRef.current = advancePrev;
 
   // ── Audio element event listeners ─────────────────────────────────────────
 
@@ -478,21 +548,10 @@ export function useAudioEngine(): AudioEngine {
     // progress event fires as the browser buffers ahead
     const onProgress = () => { /* buffer bar could be drawn here — no state change needed */ };
 
-    // ── Ended: handle repeat ──────────────────────────────────────────────
+    // ── Ended: auto-advance to next track ──────────────────────────────────
 
     const onEnded = () => {
-      const repeat    = repeatModeRef.current;
-      const current   = currentTrackRef.current;
-      const shuffleOn = shuffleOnRef.current;    // ← use ref, not stale closure
-
-      if (repeat === "one" && current) {
-        audio.currentTime = 0;
-        audio.play().catch(console.error);
-        return;
-      }
-
-      // Advance queue (passes repeatMode so repeat=all wraps around)
-      dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
+      void advanceNextRef.current();
     };
 
     // ── Error: stream refresh flow ────────────────────────────────────────
@@ -615,6 +674,7 @@ export function useAudioEngine(): AudioEngine {
     audioRef,
     playTrack,
     playPlaylist,
+    playFromQueue,
     loadTrack,
     play,
     pause,

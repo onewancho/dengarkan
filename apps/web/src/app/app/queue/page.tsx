@@ -22,7 +22,7 @@ export default function QueuePage() {
     reorderQueue,
     toggleShuffle,
     setRepeatMode,
-    loadTrack,
+    playFromQueue,
   } = usePlayer();
 
   // ── Drag-and-drop state (pointer events for mobile support) ────────────
@@ -271,7 +271,7 @@ export default function QueuePage() {
                 {/* Track Info — Clickable to play */}
                 <button
                   className="min-w-0 flex-1 text-left cursor-pointer"
-                  onClick={() => loadTrack(item)}
+                  onClick={() => playFromQueue(idx)}
                 >
                   <p className="text-xs font-semibold text-white truncate leading-tight">
                     {qMeta.title}

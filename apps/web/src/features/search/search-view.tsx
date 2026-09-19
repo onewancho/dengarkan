@@ -1,0 +1,268 @@
+"use client";
+
+// ============================================
+// DENGARKAN — Search Feature: Search View
+//
+// Fast, lightweight YouTube search interface:
+//   • Header: "Putar Musik & Podcast YouTube-mu tanpa batas"
+//   • Touch-friendly search bar (>= 44px) with quick search chips
+//   • Result cards with instant play and Add to Playlist
+//   • Clean Black (#000000) & Neon Green (#39FF14) styling
+// ============================================
+
+import React, { useState, useEffect, useCallback } from "react";
+import type { SearchResult } from "@dengarkan/shared";
+import { apiClient } from "@/services/api-client";
+import { usePlayer } from "@/features/player/context";
+import { AddToPlaylistButton } from "@/features/playlists/add-to-playlist-button";
+import { parseTrackMeta } from "@/lib/track-meta";
+
+const QUICK_SEARCHES = [
+  "Lagu Hits Indo",
+  "Viral Tiktok",
+  "Playlist Terbaru",
+  "Road Trip",
+  "Slow Rock",
+  "Akustik Santai",
+  "Reggae",
+];
+
+export function SearchView() {
+  const [query,       setQuery]       = useState("");
+  const [results,     setResults]     = useState<SearchResult[]>([]);
+  const [isLoading,   setIsLoading]   = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [justAdded,   setJustAdded]   = useState<string | null>(null);
+
+  const { currentTrack, isPlaying, playTrack, addToQueue, next, playerState } = usePlayer();
+
+  const runSearch = useCallback(async (q: string) => {
+    const trimmed = q.trim();
+    if (!trimmed) { setResults([]); setHasSearched(false); return; }
+    setIsLoading(true);
+    setHasSearched(true);
+    try {
+      const res = await apiClient.youtube.search(trimmed);
+      setResults(res.results ?? []);
+    } catch {
+      setResults([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!query.trim()) return;
+    const timer = setTimeout(() => runSearch(query), 400);
+    return () => clearTimeout(timer);
+  }, [query, runSearch]);
+
+  const handleAddToQueue = (track: SearchResult) => {
+    addToQueue(track);
+    setJustAdded(track.videoId);
+    setTimeout(() => setJustAdded(null), 1500);
+  };
+
+  const isInitialState = !hasSearched && !query.trim() && results.length === 0;
+
+  return (
+    <div
+      className={`w-full flex-1 flex flex-col transition-all duration-300 ease-out ${
+        isInitialState
+          ? "justify-center items-center pb-[var(--tabbar-height)]"
+          : "justify-start pt-4 pb-36"
+      }`}
+    >
+      {/* Search Header & Input Group */}
+      <div
+        className={`w-full max-w-xl mx-auto transition-all duration-300 ease-out ${
+          isInitialState ? "my-auto flex flex-col items-center" : "mb-4"
+        }`}
+      >
+        {/* Header Banner (Centered) */}
+        <div className={`text-center transition-all duration-300 ${isInitialState ? "mb-6" : "mb-4"}`}>
+          <h1 className={`font-bold tracking-tight text-white leading-tight text-center transition-all duration-300 ${isInitialState ? "text-xl sm:text-2xl" : "text-lg sm:text-xl"}`}>
+            Putar Musik & Podcast YouTube-mu tanpa batas
+          </h1>
+          <p className="text-xs sm:text-sm text-[#8E8E93] mt-2 font-medium text-center max-w-lg mx-auto leading-relaxed">
+            Nikmati audio dengan kualitas terbaik langsung dari browsermu
+          </p>
+        </div>
+
+        {/* Search Bar (Centered, thumb friendly) */}
+        <div className="relative mb-3.5 w-full">
+          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#8E8E93]">
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+            </svg>
+          </div>
+          <input
+            id="search-input"
+            type="search"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              if (!e.target.value.trim()) { setResults([]); setHasSearched(false); }
+            }}
+            onKeyDown={(e) => e.key === "Enter" && runSearch(query)}
+            placeholder="Cari lagu, podcast, kesukaanmu…"
+            className="w-full pl-11 pr-11 py-3.5 rounded-2xl bg-[#161619] border border-white/10 text-sm text-white placeholder-[#8E8E93] focus:outline-none focus:border-[#39FF14] focus:ring-1 focus:ring-[#39FF14]/30 transition-default min-h-[48px]"
+          />
+          {query && (
+            <button
+              onClick={() => { setQuery(""); setResults([]); setHasSearched(false); }}
+              className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-[#8E8E93] hover:text-white transition-default cursor-pointer"
+              aria-label="Hapus teks pencarian"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+
+        {/* Quick Search Chips (Centered) */}
+        {!hasSearched && (
+          <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-xl mx-auto">
+            {QUICK_SEARCHES.map((tag) => (
+              <button
+                key={tag}
+                onClick={() => { setQuery(tag); runSearch(tag); }}
+                className="text-xs px-3 py-2 rounded-xl bg-[#161619] hover:bg-[#222226] text-[#8E8E93] hover:text-white border border-white/5 transition-default cursor-pointer min-h-[36px] flex items-center"
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Loading Skeleton */}
+      {isLoading && (
+        <div className="space-y-2">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="flex items-center gap-3 p-3 rounded-2xl bg-[#121214] animate-pulse border border-white/5">
+              <div className="w-12 h-12 rounded-xl bg-[#222226] flex-shrink-0" />
+              <div className="flex-1 space-y-2 min-w-0">
+                <div className="h-3.5 bg-[#222226] rounded-md w-3/4" />
+                <div className="h-3 bg-[#222226] rounded-md w-1/2" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Results List */}
+      {!isLoading && results.length > 0 && (
+        <div className="space-y-1.5">
+          {results.map((track) => {
+            const isCurrent = currentTrack?.videoId === track.videoId;
+            const isAdded   = justAdded === track.videoId;
+
+            return (() => {
+              const meta = parseTrackMeta(track.title, track.channelName, track.durationFormatted || track.durationSeconds);
+              return (
+              <div
+                key={track.videoId}
+                className={`group flex items-center justify-between gap-2 p-2.5 sm:p-3 rounded-2xl transition-default border ${
+                  isCurrent
+                    ? "bg-[#39FF14]/10 border-[#39FF14]/30"
+                    : "bg-[#121214] hover:bg-[#18181B] border-white/5"
+                }`}
+              >
+                {/* Play Button + Track Info */}
+                <button
+                  onClick={() => { addToQueue(track); if (!currentTrack || playerState === "idle" || playerState === "error") next(); }}
+                  className="flex items-center gap-3 min-w-0 flex-1 text-left cursor-pointer focus:outline-none"
+                  aria-label={`Putar ${track.title}`}
+                >
+                  <div className="relative w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-[#222226] border border-white/10">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={track.thumbnailUrl}
+                      alt=""
+                      className="w-full h-full object-cover group-hover:scale-105 transition-default"
+                    />
+                    {isCurrent && isPlaying ? (
+                      <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                        <div className="w-3.5 h-3.5 flex items-end gap-0.5">
+                          <span className="w-0.5 h-3 bg-[#39FF14] animate-pulse" />
+                          <span className="w-0.5 h-2 bg-[#39FF14] animate-pulse delay-75" />
+                          <span className="w-0.5 h-3.5 bg-[#39FF14] animate-pulse delay-150" />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-default">
+                        <svg className="w-5 h-5 text-[#39FF14] ml-0.5 fill-current" viewBox="0 0 24 24">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <h4
+                      className={`text-xs sm:text-sm font-semibold truncate leading-tight transition-default ${
+                        isCurrent ? "text-[#39FF14]" : "text-white group-hover:text-[#39FF14]"
+                      }`}
+                    >
+                      {meta.title}
+                    </h4>
+                    <p className="text-[11px] font-medium text-white/80 truncate mt-0.5">
+                      {meta.artist}
+                    </p>
+                    <p className="text-[10px] text-[#8E8E93] truncate mt-0.5">
+                      {meta.channelInfo}
+                    </p>
+                  </div>
+                </button>
+
+                {/* Actions: Add to Queue & Add to Playlist */}
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {/* Add to queue */}
+                  <button
+                    onClick={() => handleAddToQueue(track)}
+                    className={`min-w-[40px] min-h-[40px] rounded-xl flex items-center justify-center border transition-default ${
+                      isAdded
+                        ? "bg-[#39FF14]/20 border-[#39FF14]/30 text-[#39FF14]"
+                        : "bg-[#18181B] hover:bg-[#222226] border-white/5 text-[#8E8E93] hover:text-white"
+                    }`}
+                    aria-label={isAdded ? "Ditambahkan ke antrean" : "Tambah ke antrean"}
+                    title="Tambah ke antrean"
+                  >
+                    {isAdded ? (
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                    )}
+                  </button>
+
+                  {/* Add to playlist */}
+                  <AddToPlaylistButton track={track} />
+                </div>
+              </div>
+              );
+            })();
+          })}
+        </div>
+      )}
+
+      {/* Empty State */}
+      {!isLoading && hasSearched && results.length === 0 && (
+        <div className="text-center py-16">
+          <div className="w-12 h-12 rounded-2xl bg-[#161619] border border-white/5 flex items-center justify-center mx-auto mb-3 text-[#8E8E93]">
+            <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" />
+            </svg>
+          </div>
+          <p className="text-sm font-semibold text-white">Tidak ada hasil ditemukan</p>
+          <p className="text-xs text-[#8E8E93] mt-1">Coba gunakan kata kunci pencarian yang lain.</p>
+        </div>
+      )}
+    </div>
+  );
+}

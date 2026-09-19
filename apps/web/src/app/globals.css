@@ -1,0 +1,139 @@
+@import "tailwindcss";
+
+/* ============================================
+   DENGARKAN — Design System
+   Colors:
+     Black:      #000000
+     White:      #FFFFFF
+     Muted Gray: #8E8E93, #71717A, #18181B
+     Neon Green: #39FF14 (Accent)
+   ============================================ */
+
+@theme {
+  /* Brand colors — Neon Green (#39FF14) Palette */
+  --color-brand-50: #ebffea;
+  --color-brand-100: #d2ffd0;
+  --color-brand-200: #a5ffa2;
+  --color-brand-300: #73ff6e;
+  --color-brand-400: #4eff47;
+  --color-brand-500: #39FF14;
+  --color-brand-600: #29d60d;
+  --color-brand-700: #20a70c;
+  --color-brand-800: #1d830f;
+  --color-brand-900: #1b6c11;
+  --color-brand-950: #083c04;
+
+  /* Surfaces — Pure Black (#000000) & Minimal Dark Layers */
+  --color-surface-0: #000000;
+  --color-surface-1: #0c0c0e;
+  --color-surface-2: #161619;
+  --color-surface-3: #222226;
+  --color-surface-4: #2d2d33;
+
+  /* Text */
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #d1d1d6;
+  --color-text-muted: #8e8e93;
+
+  /* Accent */
+  --color-accent: #39FF14;
+  --color-accent-glow: rgba(57, 255, 20, 0.35);
+
+  /* Status */
+  --color-success: #39FF14;
+  --color-error: #ff3b30;
+  --color-warning: #ffcc00;
+
+  /* Spacing */
+  --spacing-safe-top: env(safe-area-inset-top, 0px);
+  --spacing-safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* Fonts */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+:root {
+  --tabbar-height: calc(56px + max(env(safe-area-inset-bottom, 0px), 1rem));
+}
+
+/* Base styles */
+html {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  background-color: #000000;
+}
+
+body {
+  background-color: #000000;
+  color: #ffffff;
+  font-family: var(--font-sans);
+  min-height: 100dvh;
+  overscroll-behavior-y: contain;
+  overscroll-behavior-x: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Safe area padding for iPhone notch / Dynamic Island */
+.safe-top {
+  padding-top: max(var(--spacing-safe-top), 0.75rem);
+}
+
+/* Safe area padding for iPhone notch / home indicator */
+.safe-bottom {
+  padding-bottom: max(var(--spacing-safe-bottom), 1rem);
+}
+
+/* Lightweight glass morphism */
+.glass {
+  background: rgba(14, 14, 16, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Crisp Neon Green Accent Glow */
+.glow-brand {
+  box-shadow: 0 0 20px rgba(57, 255, 20, 0.18),
+    0 0 40px rgba(57, 255, 20, 0.06);
+}
+
+/* Smooth transitions */
+.transition-default {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Hide scrollbar */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Loading spinner */
+@keyframes spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.animate-spin-slow {
+  animation: spin-slow 1.5s linear infinite;
+}
+
+/* Scrubber range input styling */
+input[type="range"] {
+  accent-color: #39FF14;
+}
+
+/* Input styling overrides for dark theme */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #161619 inset;
+  -webkit-text-fill-color: #ffffff;
+  caret-color: #39FF14;
+  transition: background-color 5000s ease-in-out 0s;
+}

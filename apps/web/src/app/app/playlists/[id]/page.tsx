@@ -50,35 +50,65 @@ function TrackRow({
   onAnnounce,
 }: TrackRowProps) {
   const { removeTrack, moveTrackUp, moveTrackDown } = usePlaylistContext();
-  const { currentTrack, isPlaying, playPlaylist } = usePlayer();
+  const {
+    currentTrack,
+    isPlaying,
+    playPlaylist,
+    toggle,
+    playTrackAtIndex,
+    allTracks: playerAllTracks,
+  } = usePlayer();
   const [isRemoving, setIsRemoving] = useState(false);
 
   const isCurrent = currentTrack?.videoId === track.videoId;
+
+  // Index of currently playing track within this playlist (if active)
+  const currentPlaylistTrackIdx = allTracks.findIndex(
+    (t) => t.videoId === currentTrack?.videoId
+  );
+  const isPlayed = currentPlaylistTrackIdx !== -1 && index < currentPlaylistTrackIdx;
+
   const meta = parseTrackMeta(track.title, track.channelName, track.durationSeconds);
 
   const handlePlay = () => {
-    void playPlaylist(
-      allTracks.map((t) => ({
-        videoId:         t.videoId,
-        title:           t.title,
-        channelName:     t.channelName,
-        thumbnailUrl:    t.thumbnailUrl,
-        durationSeconds: t.durationSeconds,
-      })),
-      index
-    );
+    if (isCurrent) {
+      toggle();
+      return;
+    }
+
+    // If this playlist is already loaded in the player engine session, jump directly
+    const isSameSession =
+      playerAllTracks.length === allTracks.length &&
+      playerAllTracks.every((t, i) => t.videoId === allTracks[i]?.videoId);
+
+    if (isSameSession) {
+      void playTrackAtIndex(index);
+    } else {
+      void playPlaylist(
+        allTracks.map((t) => ({
+          videoId:         t.videoId,
+          title:           t.title,
+          channelName:     t.channelName,
+          thumbnailUrl:    t.thumbnailUrl,
+          durationSeconds: t.durationSeconds,
+        })),
+        index
+      );
+    }
   };
 
   return (
     <div
       data-track-index={index}
-      className={`group relative flex items-center gap-2 px-3 py-2.5 rounded-2xl border transition-all duration-150 ${
+      className={`group relative flex items-center gap-2.5 px-3 py-2.5 rounded-2xl border transition-all duration-150 ${
         isDragging
           ? "opacity-75 scale-[1.02] shadow-xl border-[#39FF14]/60 bg-[#222226] ring-2 ring-[#39FF14]/30 z-20"
           : isDropTarget
           ? "border-t-2 border-[#39FF14] bg-[#39FF14]/5"
           : isCurrent
-          ? "bg-[#39FF14]/10 border-[#39FF14]/30"
+          ? "bg-[#39FF14]/10 border-[#39FF14]/30 shadow-md shadow-[#39FF14]/5"
+          : isPlayed
+          ? "bg-[#121214]/60 hover:bg-[#18181B] border-white/5 opacity-80 hover:opacity-100"
           : "bg-[#121214] hover:bg-[#18181B] border-white/5"
       }`}
     >
@@ -87,7 +117,7 @@ function TrackRow({
         role="button"
         tabIndex={0}
         aria-label={`Urutkan ${track.title}. Posisi ${index + 1} dari ${allTracks.length}. Gunakan Panah Atas/Bawah.`}
-        className="touch-none select-none p-2 rounded-xl text-[#8E8E93] hover:text-white hover:bg-white/5 cursor-grab active:cursor-grabbing transition-default flex-shrink-0 min-w-[36px] min-h-[36px] flex items-center justify-center focus:outline-none focus:ring-1 focus:ring-[#39FF14]"
+        className="touch-none select-none p-1.5 rounded-xl text-[#8E8E93] hover:text-white hover:bg-white/5 cursor-grab active:cursor-grabbing transition-default flex-shrink-0 min-w-[32px] min-h-[36px] flex items-center justify-center focus:outline-none focus:ring-1 focus:ring-[#39FF14]"
         onPointerDown={(e) => {
           if (e.button !== 0) return;
           e.preventDefault();
@@ -139,7 +169,7 @@ function TrackRow({
             onAnnounce(`Memindahkan ${track.title} ke atas`);
             void moveTrackUp(index);
           }}
-          className="p-1 rounded text-[#8E8E93] hover:text-white disabled:opacity-20 hover:bg-white/5 transition-default focus:opacity-100"
+          className="p-1 rounded text-[#8E8E93] hover:text-white disabled:opacity-20 hover:bg-white/5 transition-default focus:opacity-100 cursor-pointer"
           aria-label={`Pindahkan ${track.title} ke atas`}
           title="Ke atas"
         >
@@ -154,7 +184,7 @@ function TrackRow({
             onAnnounce(`Memindahkan ${track.title} ke bawah`);
             void moveTrackDown(index);
           }}
-          className="p-1 rounded text-[#8E8E93] hover:text-white disabled:opacity-20 hover:bg-white/5 transition-default focus:opacity-100"
+          className="p-1 rounded text-[#8E8E93] hover:text-white disabled:opacity-20 hover:bg-white/5 transition-default focus:opacity-100 cursor-pointer"
           aria-label={`Pindahkan ${track.title} ke bawah`}
           title="Ke bawah"
         >
@@ -164,21 +194,49 @@ function TrackRow({
         </button>
       </div>
 
+      {/* Position Number or Equalizer */}
+      <div className="w-6 flex items-center justify-center flex-shrink-0">
+        {isCurrent && isPlaying ? (
+          <div className="w-3.5 h-3.5 flex items-end gap-0.5">
+            <span className="w-0.5 h-3 bg-[#39FF14] animate-pulse" />
+            <span className="w-0.5 h-1.5 bg-[#39FF14] animate-pulse delay-75" />
+            <span className="w-0.5 h-3 bg-[#39FF14] animate-pulse delay-150" />
+          </div>
+        ) : (
+          <span
+            className={`text-xs tabular-nums font-semibold ${
+              isCurrent
+                ? "text-[#39FF14]"
+                : isPlayed
+                ? "text-[#8E8E93]/60"
+                : "text-[#8E8E93]"
+            }`}
+          >
+            {(index + 1).toString().padStart(2, "0")}
+          </span>
+        )}
+      </div>
+
       {/* Position / Thumbnail */}
       <button
+        type="button"
         onClick={handlePlay}
         className="relative w-11 h-11 rounded-xl overflow-hidden flex-shrink-0 bg-[#222226] border border-white/10 focus:outline-none cursor-pointer"
-        aria-label={`Putar ${track.title}`}
+        aria-label={`${isCurrent && isPlaying ? "Jeda" : "Putar"} ${track.title}`}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={track.thumbnailUrl} alt="" className="w-full h-full object-cover" />
-        {isCurrent && isPlaying ? (
-          <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
-            <div className="w-3 h-3 flex items-end gap-0.5">
-              <span className="w-0.5 h-2.5 bg-[#39FF14] animate-pulse" />
-              <span className="w-0.5 h-1.5 bg-[#39FF14] animate-pulse delay-75" />
-              <span className="w-0.5 h-3 bg-[#39FF14] animate-pulse delay-150" />
-            </div>
+        {isCurrent ? (
+          <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+            {isPlaying ? (
+              <svg className="w-4 h-4 text-[#39FF14] fill-current" viewBox="0 0 24 24">
+                <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 text-[#39FF14] ml-0.5 fill-current" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
           </div>
         ) : (
           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-default">
@@ -189,23 +247,38 @@ function TrackRow({
         )}
       </button>
 
-      {/* Track Info (Judul Lagu, Penyanyi, nama channel - durasi) */}
-      <div className="flex-1 min-w-0">
-        <h4 className={`text-xs sm:text-sm font-semibold truncate leading-tight ${isCurrent ? "text-[#39FF14]" : "text-white"}`}>
-          {meta.title}
-        </h4>
-        <p className="text-xs text-white/80 font-medium truncate mt-0.5">
+      {/* Track Info (Judul Lagu, Penyanyi, nama channel - durasi) — Clickable */}
+      <button
+        type="button"
+        onClick={handlePlay}
+        className="flex-1 min-w-0 text-left cursor-pointer focus:outline-none"
+        aria-label={`${isCurrent && isPlaying ? "Jeda" : "Putar"} ${track.title}`}
+      >
+        <div className="flex items-center gap-1.5">
+          {isCurrent && (
+            <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-[#39FF14] text-black flex-shrink-0">
+              Diputar
+            </span>
+          )}
+          <h4
+            className={`text-xs sm:text-sm font-semibold truncate leading-tight ${
+              isCurrent ? "text-[#39FF14]" : isPlayed ? "text-white/70" : "text-white"
+            }`}
+          >
+            {meta.title}
+          </h4>
+        </div>
+        <p
+          className={`text-xs font-medium truncate mt-0.5 ${
+            isCurrent ? "text-white/90" : isPlayed ? "text-white/50" : "text-white/80"
+          }`}
+        >
           {meta.artist}
         </p>
         <p className="text-[11px] text-[#8E8E93] truncate mt-0.5">
           {meta.channelInfo}
         </p>
-      </div>
-
-      {/* Position Number */}
-      <span className="text-[11px] text-[#8E8E93] tabular-nums opacity-40 flex-shrink-0">
-        {(index + 1).toString().padStart(2, "0")}
-      </span>
+      </button>
 
       {/* Remove Track Button */}
       <button
@@ -216,7 +289,7 @@ function TrackRow({
           catch { /* rollback handled in hook */ }
           finally { setIsRemoving(false); }
         }}
-        className="opacity-0 group-hover:opacity-100 p-2 rounded-xl hover:bg-[#FF3B30]/15 text-[#8E8E93] hover:text-[#FF3B30] transition-default disabled:opacity-40 flex-shrink-0 min-h-[36px]"
+        className="opacity-0 group-hover:opacity-100 p-2 rounded-xl hover:bg-[#FF3B30]/15 text-[#8E8E93] hover:text-[#FF3B30] transition-default disabled:opacity-40 flex-shrink-0 min-h-[36px] cursor-pointer"
         aria-label="Hapus lagu dari playlist"
         title="Hapus"
       >
@@ -245,7 +318,7 @@ export default function PlaylistDetailPage() {
     openPlaylist,
     reorderTracks,
   } = usePlaylistContext();
-  const { playPlaylist } = usePlayer();
+  const { playPlaylist, currentTrack, isPlaying, toggle } = usePlayer();
 
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [dropIndex,     setDropIndex]     = useState<number | null>(null);
@@ -303,6 +376,10 @@ export default function PlaylistDetailPage() {
     setDropIndex(null);
   }, []);
 
+  const isThisPlaylistActive =
+    activeTracks.length > 0 &&
+    activeTracks.some((t) => t.videoId === currentTrack?.videoId);
+
   const playAll = () => {
     if (activeTracks.length === 0) return;
     void playPlaylist(
@@ -315,6 +392,15 @@ export default function PlaylistDetailPage() {
       })),
       0
     );
+  };
+
+  const handlePlayAllOrToggle = () => {
+    if (activeTracks.length === 0) return;
+    if (isThisPlaylistActive) {
+      toggle();
+      return;
+    }
+    playAll();
   };
 
   const currentPl = activePlaylist?.id === playlistId ? activePlaylist : playlists.find((p) => p.id === playlistId);
@@ -349,14 +435,38 @@ export default function PlaylistDetailPage() {
 
         {activeTracks.length > 0 && (
           <button
-            onClick={playAll}
+            onClick={handlePlayAllOrToggle}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#39FF14] text-black text-xs font-bold shadow-md hover:bg-[#57FF38] active:scale-95 transition-default cursor-pointer min-h-[44px] flex-shrink-0"
-            aria-label="Putar semua lagu di playlist"
+            aria-label={
+              isThisPlaylistActive && isPlaying
+                ? "Jeda pemutaran"
+                : isThisPlaylistActive
+                ? "Lanjutkan pemutaran"
+                : "Putar semua lagu di playlist"
+            }
           >
-            <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-            <span>Putar Semua</span>
+            {isThisPlaylistActive && isPlaying ? (
+              <>
+                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                  <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                </svg>
+                <span>Jeda</span>
+              </>
+            ) : isThisPlaylistActive && !isPlaying ? (
+              <>
+                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                <span>Lanjutkan</span>
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                <span>Putar Semua</span>
+              </>
+            )}
           </button>
         )}
       </div>

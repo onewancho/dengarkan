@@ -321,35 +321,63 @@ function TrackRow({
   onAnnounce,
 }: TrackRowProps) {
   const { removeTrack, moveTrackUp, moveTrackDown } = usePlaylistContext();
-  const { currentTrack, isPlaying, playPlaylist } = usePlayer();
+  const {
+    currentTrack,
+    isPlaying,
+    playPlaylist,
+    toggle,
+    playTrackAtIndex,
+    allTracks: playerAllTracks,
+  } = usePlayer();
   const [isRemoving, setIsRemoving] = useState(false);
 
   const isCurrent = currentTrack?.videoId === track.videoId;
+
+  const currentPlaylistTrackIdx = allTracks.findIndex(
+    (t) => t.videoId === currentTrack?.videoId
+  );
+  const isPlayed = currentPlaylistTrackIdx !== -1 && index < currentPlaylistTrackIdx;
+
   const meta = parseTrackMeta(track.title, track.channelName, track.durationSeconds);
 
   const handlePlay = () => {
-    void playPlaylist(
-      allTracks.map((t) => ({
-        videoId:         t.videoId,
-        title:           t.title,
-        channelName:     t.channelName,
-        thumbnailUrl:    t.thumbnailUrl,
-        durationSeconds: t.durationSeconds,
-      })),
-      index
-    );
+    if (isCurrent) {
+      toggle();
+      return;
+    }
+
+    const isSameSession =
+      playerAllTracks.length === allTracks.length &&
+      playerAllTracks.every((t, i) => t.videoId === allTracks[i]?.videoId);
+
+    if (isSameSession) {
+      void playTrackAtIndex(index);
+    } else {
+      void playPlaylist(
+        allTracks.map((t) => ({
+          videoId:         t.videoId,
+          title:           t.title,
+          channelName:     t.channelName,
+          thumbnailUrl:    t.thumbnailUrl,
+          durationSeconds: t.durationSeconds,
+        })),
+        index
+      );
+    }
   };
 
   return (
     <div
       data-track-index={index}
-      className={`group relative flex items-center gap-2 px-2.5 py-2 rounded-xl border transition-all duration-150 ${
+      className={`group relative flex items-center gap-2.5 px-2.5 py-2 rounded-xl border transition-all duration-150 ${
         isDragging
           ? "opacity-75 scale-[1.02] shadow-xl border-brand-400/60 bg-surface-3 ring-2 ring-brand-500/30 z-20"
           : isDropTarget
           ? "border-t-2 border-brand-400 bg-brand-500/5"
           : isCurrent
-          ? "bg-brand-500/10 border-brand-500/25"
+          ? "bg-brand-500/10 border-brand-500/25 shadow-md shadow-brand-500/5"
+          : isPlayed
+          ? "hover:bg-surface-2/40 border-transparent hover:border-white/5 opacity-80 hover:opacity-100"
           : "hover:bg-surface-2/50 border-transparent hover:border-white/5"
       }`}
     >
@@ -398,7 +426,7 @@ function TrackRow({
         <IconGrip className="w-4 h-4" />
       </div>
 
-      {/* Accessible Move Up / Down controls (visible on hover/focus, screen-reader accessible) */}
+      {/* Accessible Move Up / Down controls */}
       <div className="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-default flex-shrink-0">
         <button
           disabled={index === 0}
@@ -407,7 +435,7 @@ function TrackRow({
             onAnnounce(`Moved ${track.title} up to position ${index} of ${allTracks.length}`);
             void moveTrackUp(index);
           }}
-          className="p-1 rounded hover:bg-surface-3 text-text-muted hover:text-text-primary disabled:opacity-20 transition-default"
+          className="p-1 rounded hover:bg-surface-3 text-text-muted hover:text-text-primary disabled:opacity-20 transition-default cursor-pointer"
           aria-label={`Move ${track.title} up`}
           title="Move up"
         >
@@ -420,7 +448,7 @@ function TrackRow({
             onAnnounce(`Moved ${track.title} down to position ${index + 2} of ${allTracks.length}`);
             void moveTrackDown(index);
           }}
-          className="p-1 rounded hover:bg-surface-3 text-text-muted hover:text-text-primary disabled:opacity-20 transition-default"
+          className="p-1 rounded hover:bg-surface-3 text-text-muted hover:text-text-primary disabled:opacity-20 transition-default cursor-pointer"
           aria-label={`Move ${track.title} down`}
           title="Move down"
         >
@@ -428,21 +456,49 @@ function TrackRow({
         </button>
       </div>
 
+      {/* Number or Equalizer */}
+      <div className="w-6 flex items-center justify-center flex-shrink-0">
+        {isCurrent && isPlaying ? (
+          <div className="w-3.5 h-3.5 flex items-end gap-0.5">
+            <span className="w-0.5 h-3 bg-brand-400 animate-pulse" />
+            <span className="w-0.5 h-1.5 bg-brand-400 animate-pulse delay-75" />
+            <span className="w-0.5 h-3 bg-brand-400 animate-pulse delay-150" />
+          </div>
+        ) : (
+          <span
+            className={`text-xs tabular-nums font-semibold ${
+              isCurrent
+                ? "text-brand-400"
+                : isPlayed
+                ? "text-text-muted/60"
+                : "text-text-muted"
+            }`}
+          >
+            {(index + 1).toString().padStart(2, "0")}
+          </span>
+        )}
+      </div>
+
       {/* Position / thumbnail */}
       <button
+        type="button"
         onClick={handlePlay}
-        className="relative w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-surface-3 focus:outline-none"
-        aria-label={`Play ${track.title}`}
+        className="relative w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-surface-3 focus:outline-none cursor-pointer"
+        aria-label={`${isCurrent && isPlaying ? "Pause" : "Play"} ${track.title}`}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={track.thumbnailUrl} alt="" className="w-full h-full object-cover" />
-        {isCurrent && isPlaying ? (
-          <div className="absolute inset-0 bg-brand-950/60 flex items-center justify-center">
-            <div className="w-3 h-3 flex items-end gap-0.5">
-              <span className="w-0.5 h-2.5 bg-brand-300 animate-pulse" />
-              <span className="w-0.5 h-1.5 bg-brand-300 animate-pulse delay-75" />
-              <span className="w-0.5 h-3 bg-brand-300 animate-pulse delay-150" />
-            </div>
+        {isCurrent ? (
+          <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+            {isPlaying ? (
+              <svg className="w-4 h-4 text-brand-400 fill-current" viewBox="0 0 24 24">
+                <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 text-brand-400 ml-0.5 fill-current" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
           </div>
         ) : (
           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-default">
@@ -451,23 +507,30 @@ function TrackRow({
         )}
       </button>
 
-      {/* Track info (Judul Lagu, Penyanyi, nama channel - durasi) */}
-      <div className="flex-1 min-w-0">
-        <p className={`text-xs font-semibold truncate ${isCurrent ? "text-[#39FF14]" : "text-white"}`}>
-          {meta.title}
-        </p>
-        <p className="text-[11px] text-white/80 font-medium truncate mt-0.5">
+      {/* Track info — Clickable to play */}
+      <button
+        type="button"
+        onClick={handlePlay}
+        className="flex-1 min-w-0 text-left cursor-pointer focus:outline-none"
+        aria-label={`${isCurrent && isPlaying ? "Pause" : "Play"} ${track.title}`}
+      >
+        <div className="flex items-center gap-1.5">
+          {isCurrent && (
+            <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-brand-400 text-black flex-shrink-0">
+              Diputar
+            </span>
+          )}
+          <p className={`text-xs font-semibold truncate ${isCurrent ? "text-brand-400" : isPlayed ? "text-white/70" : "text-white"}`}>
+            {meta.title}
+          </p>
+        </div>
+        <p className={`text-[11px] font-medium truncate mt-0.5 ${isCurrent ? "text-white/90" : isPlayed ? "text-white/50" : "text-white/80"}`}>
           {meta.artist}
         </p>
-        <p className="text-[10px] text-[#8E8E93] truncate mt-0.5">
+        <p className="text-[10px] text-text-muted truncate mt-0.5">
           {meta.channelInfo}
         </p>
-      </div>
-
-      {/* Position */}
-      <span className="text-[11px] text-text-muted tabular-nums opacity-40 flex-shrink-0">
-        {(index + 1).toString().padStart(2, "0")}
-      </span>
+      </button>
 
       {/* Remove */}
       <button

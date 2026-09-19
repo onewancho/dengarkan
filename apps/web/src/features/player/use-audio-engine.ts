@@ -113,7 +113,7 @@ type QueueAction =
   | { type: "ADD";    track: PlayableTrack }
   | { type: "REMOVE"; index: number }
   | { type: "CLEAR" }
-  | { type: "ADVANCE_NEXT"; current: PlayableTrack | null; shuffleOn: boolean; repeatMode?: RepeatMode }
+  | { type: "ADVANCE_NEXT"; current: PlayableTrack | null; shuffleOn: boolean; repeatMode?: RepeatMode; chosenIndex?: number }
   | { type: "ADVANCE_PREV"; current: PlayableTrack | null }
   | { type: "PUSH_HISTORY"; track: PlayableTrack }
   | { type: "SHUFFLE_TOGGLE" }
@@ -162,10 +162,10 @@ function queueReducer(state: QueueState, action: QueueAction): QueueState {
         return { ...state, nextTrack: null };
       }
 
-      let idx = 0;
-      if (shuffleOn) {
-        idx = Math.floor(Math.random() * queue.length);
-      }
+      let idx = typeof action.chosenIndex === "number" && action.chosenIndex >= 0 && action.chosenIndex < queue.length
+        ? action.chosenIndex
+        : (shuffleOn ? Math.floor(Math.random() * queue.length) : 0);
+
       const nextTrack = queue[idx];
       const newQueue  = queue.filter((_, i) => i !== idx);
       const history   = action.current
@@ -244,6 +244,8 @@ export function useAudioEngine(): AudioEngine {
   const shuffleOnRef     = useRef(false);     // mirrors queueState.shuffleOn for event handlers
   const queueStateRef    = useRef(queueState);
   const refreshingRef    = useRef(false);
+  const isAdvancingRef   = useRef(false);
+  const advanceNextRef   = useRef<() => Promise<void>>(() => Promise.resolve());
 
   // Sync refs synchronously every render to prevent any stale closures
   currentTrackRef.current  = currentTrack;
@@ -351,20 +353,22 @@ export function useAudioEngine(): AudioEngine {
     const dur = isFinite(audio.duration) && audio.duration > 0
       ? audio.duration
       : (currentTrackRef.current?.durationSeconds || Infinity);
+
+    // If seeking to or within 0.5s of the end (or past the end), advance to next track!
+    if (isFinite(dur) && dur > 0 && seconds >= dur - 0.5) {
+      void advanceNextRef.current();
+      return;
+    }
+
     const target = Math.max(0, Math.min(seconds, isFinite(dur) ? dur : seconds));
     if (isFinite(target)) {
       try {
-        if (typeof (audio as unknown as { fastSeek?: (t: number) => void }).fastSeek === "function") {
-          (audio as unknown as { fastSeek: (t: number) => void }).fastSeek(target);
-        } else {
-          audio.currentTime = target;
+        audio.currentTime = target;
+        if (playerStateRef.current === "playing" && audio.paused) {
+          audio.play().catch((err) => console.warn("Failed to resume after seek:", err));
         }
-      } catch {
-        try {
-          audio.currentTime = target;
-        } catch (err) {
-          console.warn("Failed to seek audio:", err);
-        }
+      } catch (err) {
+        console.warn("Failed to seek audio:", err);
       }
     }
   }, []);
@@ -412,51 +416,60 @@ export function useAudioEngine(): AudioEngine {
   // ── Navigation ────────────────────────────────────────────────────────────
 
   const advanceNext = useCallback(async () => {
-    const current   = currentTrackRef.current;
-    const repeat    = repeatModeRef.current;
-    const shuffleOn = shuffleOnRef.current;
+    if (isAdvancingRef.current) return;
+    isAdvancingRef.current = true;
 
-    // repeat=one → restart current track
-    if (repeat === "one" && current) {
-      const audio = audioRef.current;
-      if (audio) {
-        audio.currentTime = 0;
-        try {
-          await audio.play();
-        } catch (e) {
-          console.error("Failed to replay track in repeat=one", e);
+    try {
+      const current   = currentTrackRef.current;
+      const repeat    = repeatModeRef.current;
+      const shuffleOn = shuffleOnRef.current;
+
+      // repeat=one → restart current track
+      if (repeat === "one" && current) {
+        const audio = audioRef.current;
+        if (audio) {
+          audio.currentTime = 0;
+          try {
+            await audio.play();
+          } catch (e) {
+            console.error("Failed to replay track in repeat=one", e);
+          }
         }
+        return;
       }
-      return;
-    }
 
-    const { queue, history } = queueStateRef.current;
+      const { queue, history } = queueStateRef.current;
 
-    if (queue.length === 0) {
-      if (repeat === "all") {
-        const full = current
-          ? [...[...history].reverse(), current]
-          : [...history].reverse();
-        if (full.length > 0) {
-          const nextTrack = { ...full[0] };
-          dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
-          await loadTrack(nextTrack);
-          return;
+      if (queue.length === 0) {
+        if (repeat === "all") {
+          const full = current
+            ? [...[...history].reverse(), current]
+            : [...history].reverse();
+          if (full.length > 0) {
+            const nextTrack = { ...full[0] };
+            dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat, chosenIndex: 0 });
+            await loadTrack(nextTrack);
+            return;
+          }
         }
+        dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
+        setPlayerState("idle");
+        return;
       }
-      dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
-      setPlayerState("idle");
-      return;
-    }
 
-    let idx = 0;
-    if (shuffleOn) {
-      idx = Math.floor(Math.random() * queue.length);
-    }
-    const nextTrack = queue[idx];
+      let idx = 0;
+      if (shuffleOn) {
+        idx = Math.floor(Math.random() * queue.length);
+      }
+      const nextTrack = queue[idx];
 
-    dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
-    await loadTrack(nextTrack);
+      dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat, chosenIndex: idx });
+      await loadTrack(nextTrack);
+    } finally {
+      setTimeout(() => {
+        isAdvancingRef.current = false;
+      }, 600);
+    }
   }, [loadTrack]);
 
   const advancePrev = useCallback(async () => {
@@ -506,7 +519,6 @@ export function useAudioEngine(): AudioEngine {
   const next = advanceNext;
   const previous = advancePrev;
 
-  const advanceNextRef = useRef(advanceNext);
   advanceNextRef.current = advanceNext;
 
   const advancePrevRef = useRef(advancePrev);
@@ -552,6 +564,17 @@ export function useAudioEngine(): AudioEngine {
 
     const onEnded = () => {
       void advanceNextRef.current();
+    };
+
+    // ── TimeUpdate watchdog: fallback if browser doesn't fire ended event ─
+
+    const onTimeUpdate = () => {
+      if (isAdvancingRef.current) return;
+      const cur = audio.currentTime;
+      const dur = audio.duration;
+      if (isFinite(dur) && dur > 0 && cur >= dur - 0.35) {
+        void advanceNextRef.current();
+      }
     };
 
     // ── Error: stream refresh flow ────────────────────────────────────────
@@ -618,6 +641,7 @@ export function useAudioEngine(): AudioEngine {
     audio.addEventListener("loadedmetadata",  onLoadedMetadata);
     audio.addEventListener("durationchange",  onDurationChange);
     audio.addEventListener("progress",        onProgress);
+    audio.addEventListener("timeupdate",      onTimeUpdate);
     audio.addEventListener("ended",           onEnded);
     audio.addEventListener("error",           onError);
 
@@ -630,6 +654,7 @@ export function useAudioEngine(): AudioEngine {
       audio.removeEventListener("loadedmetadata", onLoadedMetadata);
       audio.removeEventListener("durationchange", onDurationChange);
       audio.removeEventListener("progress",       onProgress);
+      audio.removeEventListener("timeupdate",      onTimeUpdate);
       audio.removeEventListener("ended",          onEnded);
       audio.removeEventListener("error",          onError);
     };

@@ -46,6 +46,7 @@ export function AudioPlayer() {
     previous,
     toggleShuffle,
     setRepeatMode,
+    playFromQueue,
   } = usePlayer();
 
   const [isExpanded, setIsExpanded] = useState(false);
@@ -526,6 +527,7 @@ export function AudioPlayer() {
                   } catch {}
                 }}
                 onPointerUp={(e) => {
+                  if (!dragging.current) return;
                   dragging.current = false;
                   try {
                     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
@@ -546,9 +548,10 @@ export function AudioPlayer() {
                   e.currentTarget.style.setProperty("--progress", `${pct}%`);
                 }}
                 onChange={(e) => {
-                  dragging.current = false;
-                  const val = Number(e.currentTarget.value);
-                  seek(val);
+                  if (!dragging.current) {
+                    const val = Number(e.currentTarget.value);
+                    seek(val);
+                  }
                 }}
                 className="w-full h-2 rounded-full appearance-none cursor-pointer bg-[#222226] accent-[#39FF14] focus:outline-none"
                 aria-label="Seek musik"
@@ -715,7 +718,8 @@ export function AudioPlayer() {
                     return (
                       <div
                         key={`${item.videoId}-${idx}`}
-                        className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-default"
+                        className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-default cursor-pointer"
+                        onClick={() => playFromQueue(idx)}
                       >
                         <div className="flex items-center gap-2.5 min-w-0 flex-1">
                           <span className="text-xs text-[#8E8E93] tabular-nums w-4">
@@ -734,7 +738,10 @@ export function AudioPlayer() {
                           </div>
                         </div>
                         <button
-                          onClick={() => removeFromQueue(idx)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeFromQueue(idx);
+                          }}
                           className="p-1.5 rounded-lg text-[#8E8E93] hover:text-[#FF3B30] hover:bg-white/5 transition-default"
                           aria-label="Hapus dari antrean"
                         >

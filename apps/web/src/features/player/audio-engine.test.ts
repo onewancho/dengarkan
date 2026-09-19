@@ -89,6 +89,14 @@ function clampSeek(seconds: number, duration: number): number {
   return Math.max(0, Math.min(seconds, duration));
 }
 
+function shouldAdvanceOnSeek(seconds: number, duration: number): boolean {
+  return isFinite(duration) && duration > 0 && seconds >= duration - 0.5;
+}
+
+function shouldAdvanceOnWatchdog(currentTime: number, duration: number): boolean {
+  return isFinite(duration) && duration > 0 && currentTime >= duration - 0.35;
+}
+
 // ── Queue reducer (mirrored from use-audio-engine.ts) ────────────────────────
 
 type PlayableTrack = {
@@ -105,7 +113,7 @@ type QueueAction =
   | { type: "ADD";    track: PlayableTrack }
   | { type: "REMOVE"; index: number }
   | { type: "CLEAR" }
-  | { type: "ADVANCE_NEXT"; current: PlayableTrack | null; shuffleOn: boolean }
+  | { type: "ADVANCE_NEXT"; current: PlayableTrack | null; shuffleOn: boolean; chosenIndex?: number }
   | { type: "ADVANCE_PREV"; current: PlayableTrack | null }
   | { type: "PUSH_HISTORY"; track: PlayableTrack }
   | { type: "SHUFFLE_TOGGLE" };
@@ -134,8 +142,9 @@ function queueReducer(state: QueueState, action: QueueAction): QueueState {
     case "ADVANCE_NEXT": {
       const { queue, shuffleOn } = state;
       if (queue.length === 0) return { ...state, nextTrack: null };
-      let idx = 0;
-      if (shuffleOn) idx = Math.floor(Math.random() * queue.length);
+      let idx = typeof action.chosenIndex === "number" && action.chosenIndex >= 0 && action.chosenIndex < queue.length
+        ? action.chosenIndex
+        : (shuffleOn ? Math.floor(Math.random() * queue.length) : 0);
       const nextTrack = queue[idx];
       const newQueue  = queue.filter((_, i) => i !== idx);
       const history   = action.current
@@ -237,6 +246,33 @@ describe("Audio Engine — seek clamping", () => {
   it("passes through valid seek", () => assert.equal(clampSeek(150, 300), 150));
   it("seeks to exactly 0", () => assert.equal(clampSeek(0, 300), 0));
   it("seeks to exactly duration", () => assert.equal(clampSeek(300, 300), 300));
+});
+
+describe("Audio Engine — seek near-end auto-advance", () => {
+  it("triggers advance when seeking to exact duration", () => {
+    assert.equal(shouldAdvanceOnSeek(300, 300), true);
+  });
+  it("triggers advance when seeking past duration (+10s button)", () => {
+    assert.equal(shouldAdvanceOnSeek(310, 300), true);
+  });
+  it("triggers advance when seeking within 0.5s of duration", () => {
+    assert.equal(shouldAdvanceOnSeek(299.6, 300), true);
+  });
+  it("does not trigger advance when seeking 2s before duration", () => {
+    assert.equal(shouldAdvanceOnSeek(298, 300), false);
+  });
+  it("does not trigger advance when duration is 0 or invalid", () => {
+    assert.equal(shouldAdvanceOnSeek(10, 0), false);
+  });
+});
+
+describe("Audio Engine — watchdog near-end auto-advance", () => {
+  it("triggers watchdog when currentTime >= duration - 0.35", () => {
+    assert.equal(shouldAdvanceOnWatchdog(299.7, 300), true);
+  });
+  it("does not trigger watchdog when 1s remains", () => {
+    assert.equal(shouldAdvanceOnWatchdog(299.0, 300), false);
+  });
 });
 
 describe("Audio Engine — queueReducer: ADD", () => {
@@ -353,6 +389,18 @@ describe("Audio Engine — queueReducer: ADVANCE_NEXT", () => {
     for (let i = 0; i < 5; i++) s = queueReducer(s, { type: "ADD", track: makeTrack(`t${i}`) });
     s = queueReducer(s, { type: "ADVANCE_NEXT", current: null, shuffleOn: false });
     assert.equal(s.queue.length, 4);
+  });
+
+  it("chosenIndex overrides random selection and picks exact track", () => {
+    let s = initialQueueState();
+    s = queueReducer(s, { type: "ADD", track: makeTrack("t0") });
+    s = queueReducer(s, { type: "ADD", track: makeTrack("t1") });
+    s = queueReducer(s, { type: "ADD", track: makeTrack("t2") });
+    // Pick index 2 even with shuffleOn=true
+    s = queueReducer(s, { type: "ADVANCE_NEXT", current: null, shuffleOn: true, chosenIndex: 2 });
+    assert.equal(s.nextTrack?.videoId, "t2");
+    assert.equal(s.queue.length, 2);
+    assert.ok(!s.queue.some(t => t.videoId === "t2"));
   });
 });
 

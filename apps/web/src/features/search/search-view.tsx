@@ -172,7 +172,7 @@ export function SearchView() {
               >
                 {/* Play Button + Track Info */}
                 <button
-                  onClick={() => { addToQueue(track); if (!currentTrack || playerState === "idle" || playerState === "error") next(); }}
+                  onClick={() => playTrack(track)}
                   className="flex items-center gap-3 min-w-0 flex-1 text-left cursor-pointer focus:outline-none"
                   aria-label={`Putar ${track.title}`}
                 >

@@ -84,8 +84,8 @@ function classifyYtdlpError(stderr: string, exitCode: number | null): ResolverEr
   if (YTDLP_PATTERNS.notFound.test(stderr))     return new ResolverError('VIDEO_NOT_FOUND',   'Video not found or removed');
   if (YTDLP_PATTERNS.liveStream.test(stderr))   return new ResolverError('NO_AUDIO_STREAM',   'Live streams are not supported');
   if (YTDLP_PATTERNS.network.test(stderr))      return new ResolverError('NETWORK_ERROR',     'Network error during resolution');
-  if (exitCode === 1 && text.includes('error')) return new ResolverError('VIDEO_UNAVAILABLE', 'Video unavailable');
-  return new ResolverError('RESOLVER_FAILED', `yt-dlp failed (exit ${exitCode})`);
+  if (exitCode === 1 && text.includes('error')) return new ResolverError('VIDEO_UNAVAILABLE', `Video unavailable: ${stderr.slice(0, 150)}`);
+  return new ResolverError('RESOLVER_FAILED', `yt-dlp failed (exit ${exitCode}): ${stderr.slice(0, 200)}`);
 }
 
 // ── In-process L1 LRU Cache ───────────────────────────────────────────────────
@@ -276,11 +276,25 @@ class YouTubeAudioResolver implements AudioResolver {
       stdout = result.stdout;
       stderr = result.stderr;
     } catch (err: unknown) {
-      const e = err as { stderr?: string; exitCode?: number; killed?: boolean; signal?: string };
+      const e = err as {
+        stderr?: string;
+        exitCode?: number;
+        killed?: boolean;
+        signal?: string;
+        code?: string;
+        message?: string;
+      };
+      if (e.code === 'ENOENT') {
+        throw new ResolverError(
+          'RESOLVER_FAILED',
+          `yt-dlp executable not found at "${ytdlpPath}". Please ensure yt-dlp is installed and available in PATH on the server.`,
+          err,
+        );
+      }
       if (e.killed || e.signal === 'SIGTERM') {
         throw new ResolverError('RESOLVER_FAILED', `yt-dlp timed out after ${YTDLP_TIMEOUT_MS}ms`);
       }
-      throw classifyYtdlpError(e.stderr ?? '', typeof e.exitCode === 'number' ? e.exitCode : null);
+      throw classifyYtdlpError(e.stderr || e.message || '', typeof e.exitCode === 'number' ? e.exitCode : null);
     }
 
     let data: YtdlpOutput;

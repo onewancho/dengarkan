@@ -31,11 +31,21 @@ function sendResolverError(
     const message = resolverErrorMessage[err.code];
     if (status >= 500) log.error('Resolver [%s]: %s', err.code, err.message);
     else               log.warn('Resolver [%s]: %s', err.code, err.message);
-    return reply.status(status).send({ error: err.code, message, statusCode: status });
+    return reply.status(status).send({
+      error: err.code,
+      message,
+      details: err.message,
+      statusCode: status,
+    });
   }
   const msg = err instanceof Error ? err.message : 'Unknown error';
   log.error('Resolver unexpected: %s', msg);
-  return reply.status(500).send({ error: 'RESOLVER_FAILED', message: 'Failed to resolve audio stream', statusCode: 500 });
+  return reply.status(500).send({
+    error: 'RESOLVER_FAILED',
+    message: 'Failed to resolve audio stream',
+    details: msg,
+    statusCode: 500,
+  });
 }
 
 export const audioRoutes: FastifyPluginAsync = async (app) => {

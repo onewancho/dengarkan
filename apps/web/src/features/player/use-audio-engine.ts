@@ -44,6 +44,7 @@ import {
   useEffect,
   useCallback,
   useReducer,
+  useMemo,
 } from "react";
 import type { PlayerState, AudioStream, SearchResult, QueueTrack } from "@dengarkan/shared";
 import { apiClient } from "@/services/api-client";
@@ -83,6 +84,7 @@ export interface AudioEngineState {
   isMuted:       boolean;
   queue:         PlayableTrack[];
   history:       PlayableTrack[];
+  allTracks:     PlayableTrack[];
   nextTrack:     PlayableTrack | null;
   previousTrack: PlayableTrack | null;
   currentIndex:  number;
@@ -97,6 +99,7 @@ export interface AudioEngineActions {
   playTrack:       (track: PlayableTrack, resetQueue?: boolean) => Promise<void>;
   playPlaylist:    (tracks: PlayableTrack[], startIndex?: number) => Promise<void>;
   playFromQueue:   (index: number) => Promise<void>;
+  playTrackAtIndex:(index: number) => Promise<void>;
   pause:           () => void;
   play:            () => void;
   toggle:          () => void;
@@ -121,7 +124,7 @@ export type AudioEngine = AudioEngineState & AudioEngineActions;
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const VOLUME_KEY      = "dengarkan:volume";
-const HISTORY_MAX     = 30;
+const HISTORY_MAX     = 500;
 const DEFAULT_VOLUME  = 1.0;
 
 // ── State reducer (for complex state transitions) ─────────────────────────────
@@ -138,7 +141,8 @@ type QueueAction =
   // Load a playlist: sets queue to remaining tracks after startIndex.
   // The track at startIndex becomes currentTrack (handled by caller).
   | { type: "LOAD_PLAYLIST"; tracks: PlayableTrack[]; startIndex: number }
-  | { type: "REORDER"; fromIndex: number; toIndex: number };
+  | { type: "REORDER"; fromIndex: number; toIndex: number }
+  | { type: "SET_ALL_TRACKS"; history: PlayableTrack[]; queue: PlayableTrack[] };
 
 interface QueueState {
   queue:     PlayableTrack[];
@@ -226,6 +230,9 @@ function queueReducer(state: QueueState, action: QueueAction): QueueState {
       return { ...state, queue: q };
     }
 
+    case "SET_ALL_TRACKS":
+      return { ...state, history: action.history, queue: action.queue, nextTrack: action.queue[0] ?? null };
+
     default:
       return state;
   }
@@ -280,23 +287,42 @@ export function useAudioEngine(): AudioEngine {
   useEffect(() => { shuffleOnRef.current     = queueState.shuffleOn; }, [queueState.shuffleOn]);
   useEffect(() => { queueStateRef.current    = queueState;    }, [queueState]);
 
+  // Unified full playlist/queue representation: [history (chronological) + currentTrack + queue]
+  const allTracks = useMemo(() => {
+    const list: PlayableTrack[] = [];
+    if (queueState.history.length > 0) {
+      list.push(...queueState.history.slice().reverse());
+    }
+    if (currentTrack) {
+      list.push(currentTrack);
+    }
+    if (queueState.queue.length > 0) {
+      list.push(...queueState.queue);
+    }
+    return list;
+  }, [queueState.history, currentTrack, queueState.queue]);
+
+  const allTracksRef = useRef<PlayableTrack[]>(allTracks);
+  allTracksRef.current = allTracks;
+
+  const currentIndex = currentTrack ? queueState.history.length : -1;
+
   // ── Create the audio element once ─────────────────────────────────────────
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
     const audio = new Audio();
     audio.preload = "metadata";
-    // playsInline is an HTML attribute; set via setAttribute for iOS
     audio.setAttribute("playsinline", "");
-    audioRef.current = audio;
-
-    // Restore volume from storage
     const saved = parseFloat(localStorage.getItem(VOLUME_KEY) ?? String(DEFAULT_VOLUME));
     audio.volume = isFinite(saved) && saved >= 0 && saved <= 1 ? saved : DEFAULT_VOLUME;
+    audioRef.current = audio;
 
     return () => {
       audio.pause();
       audio.src = "";
-      audio.load(); // release media resources
+      audio.load();
       audioRef.current = null;
     };
   }, []);
@@ -327,7 +353,11 @@ export function useAudioEngine(): AudioEngine {
 
   // playTrack = loadTrack + optionally reset queue
   const playTrack = useCallback(async (track: PlayableTrack, resetQueue = false) => {
-    if (resetQueue) dispatchQueue({ type: "CLEAR" });
+    if (resetQueue) {
+      dispatchQueue({ type: "CLEAR" });
+    } else if (currentTrackRef.current) {
+      dispatchQueue({ type: "PUSH_HISTORY", track: currentTrackRef.current });
+    }
     await loadTrack(track);
   }, [loadTrack]);
 
@@ -423,12 +453,89 @@ export function useAudioEngine(): AudioEngine {
 
   // ── Queue management ──────────────────────────────────────────────────────
 
-  const addToQueue      = useCallback((t: PlayableTrack) => dispatchQueue({ type: "ADD",    track: t }), []);
-  const removeFromQueue = useCallback((i: number)         => dispatchQueue({ type: "REMOVE", index: i }), []);
-  const clearQueue      = useCallback(()                  => dispatchQueue({ type: "CLEAR" }),            []);
-  const reorderQueue    = useCallback((from: number, to: number) => dispatchQueue({ type: "REORDER", fromIndex: from, toIndex: to }), []);
-  const toggleShuffle   = useCallback(()                  => dispatchQueue({ type: "SHUFFLE_TOGGLE" }),  []);
-  const setRepeatMode   = useCallback((m: RepeatMode) => setRepeatModeState(m), []);
+  const addToQueue = useCallback((t: PlayableTrack) => {
+    if (!currentTrackRef.current) {
+      void playTrack(t);
+    } else {
+      dispatchQueue({ type: "ADD", track: t });
+    }
+  }, [playTrack]);
+
+  const removeFromQueue = useCallback((index: number) => {
+    const all = allTracksRef.current;
+    if (index < 0 || index >= all.length) return;
+
+    const curIdx = currentTrackRef.current ? queueStateRef.current.history.length : -1;
+
+    if (index === curIdx) {
+      if (queueStateRef.current.queue.length > 0) {
+        void advanceNextRef.current();
+      } else if (queueStateRef.current.history.length > 0) {
+        void advancePrevRef.current();
+      } else {
+        clear();
+      }
+    } else {
+      const filtered = all.filter((_: PlayableTrack, i: number) => i !== index);
+      const curId = currentTrackRef.current?.videoId;
+      const newCurIdx = curId ? filtered.findIndex((t: PlayableTrack) => t.videoId === curId) : -1;
+      if (newCurIdx !== -1) {
+        const newHistory = filtered.slice(0, newCurIdx).reverse().slice(0, HISTORY_MAX);
+        const newQueue = filtered.slice(newCurIdx + 1);
+        dispatchQueue({
+          type: "SET_ALL_TRACKS",
+          history: newHistory,
+          queue: newQueue,
+        });
+      } else {
+        dispatchQueue({
+          type: "SET_ALL_TRACKS",
+          history: [],
+          queue: filtered,
+        });
+      }
+    }
+  }, [clear]);
+
+  const clearQueue = useCallback(() => {
+    dispatchQueue({
+      type: "SET_ALL_TRACKS",
+      history: [],
+      queue: [],
+    });
+  }, []);
+
+  const reorderQueue = useCallback((fromIndex: number, toIndex: number) => {
+    const all = allTracksRef.current;
+    if (fromIndex < 0 || fromIndex >= all.length || toIndex < 0 || toIndex >= all.length) return;
+    if (fromIndex === toIndex) return;
+
+    const reordered = [...all];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+
+    const curId = currentTrackRef.current?.videoId;
+    const newCurIdx = curId ? reordered.findIndex((t: PlayableTrack) => t.videoId === curId) : -1;
+
+    if (newCurIdx !== -1) {
+      const newHistory = reordered.slice(0, newCurIdx).reverse().slice(0, HISTORY_MAX);
+      const newQueue = reordered.slice(newCurIdx + 1);
+      dispatchQueue({
+        type: "SET_ALL_TRACKS",
+        history: newHistory,
+        queue: newQueue,
+      });
+    } else {
+      dispatchQueue({
+        type: "SET_ALL_TRACKS",
+        history: [],
+        queue: reordered,
+      });
+    }
+  }, []);
+
+  const toggleShuffle = useCallback(() => dispatchQueue({ type: "SHUFFLE_TOGGLE" }), []);
+  const setRepeatMode = useCallback((m: RepeatMode) => setRepeatModeState(m), []);
 
   // ── Navigation ────────────────────────────────────────────────────────────
 
@@ -512,26 +619,33 @@ export function useAudioEngine(): AudioEngine {
     await loadTrack(prevTrack);
   }, [loadTrack]);
 
-  const playFromQueue = useCallback(async (index: number) => {
-    const { queue, history } = queueStateRef.current;
-    if (index < 0 || index >= queue.length) return;
-    const target = queue[index];
-    const current = currentTrackRef.current;
+  const playTrackAtIndex = useCallback(async (index: number) => {
+    const all = allTracksRef.current;
+    if (index < 0 || index >= all.length) return;
 
-    const newQueue = queue.slice(index + 1);
-    const prevInQueue = queue.slice(0, index);
-    const newHistory = current
-      ? [current, ...prevInQueue.reverse(), ...history].slice(0, HISTORY_MAX)
-      : [...prevInQueue.reverse(), ...history].slice(0, HISTORY_MAX);
+    const curIdx = currentTrackRef.current ? queueStateRef.current.history.length : -1;
+    if (index === curIdx) {
+      const audio = audioRef.current;
+      if (audio && audio.paused) {
+        audio.play().catch(console.error);
+      }
+      return;
+    }
+
+    const target = all[index];
+    const newHistory = all.slice(0, index).reverse().slice(0, HISTORY_MAX);
+    const newQueue = all.slice(index + 1);
 
     dispatchQueue({
-      type: "LOAD_PLAYLIST",
-      tracks: [...[...newHistory].reverse(), target, ...newQueue],
-      startIndex: newHistory.length,
+      type: "SET_ALL_TRACKS",
+      history: newHistory,
+      queue: newQueue,
     });
 
     await loadTrack(target);
   }, [loadTrack]);
+
+  const playFromQueue = playTrackAtIndex;
 
   const next = advanceNext;
   const previous = advancePrev;
@@ -709,9 +823,10 @@ export function useAudioEngine(): AudioEngine {
     isMuted,
     queue:         queueState.queue,
     history:       queueState.history,
+    allTracks,
     nextTrack:     queueState.queue[0] ?? null,
     previousTrack: queueState.history[0] ?? null,
-    currentIndex:  currentTrack ? queueState.history.length : -1,
+    currentIndex,
     shuffleOn:     queueState.shuffleOn,
     repeatMode,
     isPlaying,
@@ -720,6 +835,7 @@ export function useAudioEngine(): AudioEngine {
     playTrack,
     playPlaylist,
     playFromQueue,
+    playTrackAtIndex,
     loadTrack,
     play,
     pause,

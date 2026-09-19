@@ -14,7 +14,8 @@ export default function QueuePage() {
   const {
     currentTrack,
     isPlaying,
-    queue,
+    allTracks,
+    currentIndex,
     shuffleOn,
     repeatMode,
     removeFromQueue,
@@ -22,7 +23,7 @@ export default function QueuePage() {
     reorderQueue,
     toggleShuffle,
     setRepeatMode,
-    playFromQueue,
+    playTrackAtIndex,
   } = usePlayer();
 
   // ── Drag-and-drop state (pointer events for mobile support) ────────────
@@ -81,12 +82,6 @@ export default function QueuePage() {
 
   const repeatLabel = repeatMode === "one" ? "Ulangi Satu" : repeatMode === "all" ? "Ulangi Semua" : "Tidak Ulangi";
 
-  const currentMeta = currentTrack
-    ? parseTrackMeta(currentTrack.title, currentTrack.channelName, currentTrack.durationSeconds)
-    : null;
-
-  const totalTracks = (currentTrack ? 1 : 0) + queue.length;
-
   return (
     <div className="w-full pt-4 pb-36">
       {/* Header */}
@@ -98,7 +93,7 @@ export default function QueuePage() {
                 <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
                 <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
               </svg>
-              {totalTracks} lagu dalam antrean
+              {allTracks.length} lagu dalam antrean
             </div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
               Antrean Pemutaran
@@ -148,8 +143,8 @@ export default function QueuePage() {
             {repeatLabel}
           </button>
 
-          {/* Clear All (only when queue has items) */}
-          {queue.length > 0 && (
+          {/* Clear All (only when allTracks has > 1 items) */}
+          {allTracks.length > 1 && (
             <button
               onClick={clearQueue}
               className="ml-auto flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-semibold text-[#FF3B30] bg-[#FF3B30]/10 hover:bg-[#FF3B30]/20 border border-[#FF3B30]/20 transition-default min-h-[40px] cursor-pointer"
@@ -164,60 +159,15 @@ export default function QueuePage() {
         </div>
       </div>
 
-      {/* ── Now Playing / Item #1 ────────────────────────────────────────── */}
-      {currentTrack && currentMeta && (
-        <div className="mb-4">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-[#39FF14] mb-2 flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#39FF14] animate-ping" />
-            #1 Sedang Diputar
-          </p>
-          <div className="flex items-center gap-3 p-3.5 rounded-2xl bg-[#39FF14]/10 border border-[#39FF14]/30 shadow-lg shadow-[#39FF14]/5">
-            <div className="relative w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-[#161619] border border-white/10">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={currentTrack.thumbnailUrl}
-                alt=""
-                className="w-full h-full object-cover"
-              />
-              {isPlaying && (
-                <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                  <div className="w-3.5 h-3.5 flex items-end gap-0.5">
-                    <span className="w-0.5 h-3 bg-[#39FF14] animate-pulse" />
-                    <span className="w-0.5 h-1.5 bg-[#39FF14] animate-pulse delay-75" />
-                    <span className="w-0.5 h-3 bg-[#39FF14] animate-pulse delay-150" />
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-[#39FF14] text-black">
-                  #1 Diputar
-                </span>
-                <h3 className="text-sm font-bold text-[#39FF14] truncate leading-tight">
-                  {currentMeta.title}
-                </h3>
-              </div>
-              <p className="text-xs text-white/90 font-medium truncate mt-0.5">
-                {currentMeta.artist}
-              </p>
-              <p className="text-[11px] text-[#8E8E93] truncate mt-0.5">
-                {currentMeta.channelInfo}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── Queue List ────────────────────────────────────────────────── */}
-      {queue.length > 0 && (
+      {allTracks.length > 0 && (
         <p className="text-[10px] font-bold uppercase tracking-widest text-[#8E8E93] mb-2">
-          Selanjutnya dalam Antrean · {queue.length} lagu
+          Daftar Lagu · {allTracks.length} lagu
         </p>
       )}
 
       <div ref={listRef} className="space-y-1">
-        {!currentTrack && queue.length === 0 ? (
+        {allTracks.length === 0 ? (
           <div className="text-center py-20">
             <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[#161619] border border-white/5 flex items-center justify-center">
               <svg className="w-7 h-7 text-[#8E8E93]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -230,16 +180,11 @@ export default function QueuePage() {
               Cari dan tambahkan lagu dari tab <strong className="text-[#39FF14]">Cari</strong>
             </p>
           </div>
-        ) : queue.length === 0 ? (
-          <div className="text-center py-8 px-4 rounded-2xl border border-dashed border-white/10 bg-white/[0.02]">
-            <p className="text-xs text-[#8E8E93] font-medium">Belum ada lagu berikutnya dalam antrean</p>
-            <p className="text-[11px] text-[#8E8E93]/60 mt-1">
-              Tambahkan lagu berikutnya dengan tombol <span className="text-[#39FF14] font-semibold">+ Antrean</span> di halaman Cari
-            </p>
-          </div>
         ) : (
-          queue.map((item, idx) => {
+          allTracks.map((item, idx) => {
             const qMeta = parseTrackMeta(item.title, item.channelName, item.durationSeconds);
+            const isCurrent = idx === currentIndex;
+            const isPlayed = idx < currentIndex;
             const isDragged = dragIndex === idx;
             const isOver = overIndex === idx && dragIndex !== null && dragIndex !== idx;
 
@@ -248,10 +193,14 @@ export default function QueuePage() {
                 key={`${item.videoId}-${idx}`}
                 data-queue-item
                 className={`flex items-center gap-2 p-2.5 rounded-xl transition-all duration-150 ${
-                  isDragged
+                  isCurrent
+                    ? "bg-[#39FF14]/10 border border-[#39FF14]/30 shadow-md shadow-[#39FF14]/5"
+                    : isDragged
                     ? "opacity-50 scale-[0.97] bg-[#39FF14]/10 border border-[#39FF14]/30"
                     : isOver
                     ? "bg-[#39FF14]/5 border border-[#39FF14]/20 translate-y-0.5"
+                    : isPlayed
+                    ? "bg-white/[0.02] hover:bg-white/10 opacity-70 hover:opacity-100 border border-transparent"
                     : "bg-white/5 hover:bg-white/10 border border-transparent"
                 }`}
                 onPointerMove={handleDragMove}
@@ -270,10 +219,28 @@ export default function QueuePage() {
                   </svg>
                 </button>
 
-                {/* Number */}
-                <span className="text-xs text-[#8E8E93] tabular-nums w-5 text-center flex-shrink-0 font-medium">
-                  {currentTrack ? idx + 2 : idx + 1}
-                </span>
+                {/* Number or Equalizer */}
+                <div className="w-6 flex items-center justify-center flex-shrink-0">
+                  {isCurrent && isPlaying ? (
+                    <div className="w-3.5 h-3.5 flex items-end gap-0.5">
+                      <span className="w-0.5 h-3 bg-[#39FF14] animate-pulse" />
+                      <span className="w-0.5 h-1.5 bg-[#39FF14] animate-pulse delay-75" />
+                      <span className="w-0.5 h-3 bg-[#39FF14] animate-pulse delay-150" />
+                    </div>
+                  ) : (
+                    <span
+                      className={`text-xs tabular-nums font-medium ${
+                        isCurrent
+                          ? "text-[#39FF14] font-bold"
+                          : isPlayed
+                          ? "text-[#8E8E93]/60"
+                          : "text-[#8E8E93]"
+                      }`}
+                    >
+                      {idx + 1}
+                    </span>
+                  )}
+                </div>
 
                 {/* Thumbnail */}
                 <div className="relative w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-[#161619] border border-white/10">
@@ -283,20 +250,36 @@ export default function QueuePage() {
                     alt=""
                     className="w-full h-full object-cover"
                   />
+                  {isCurrent && (
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                      <span className="w-2 h-2 rounded-full bg-[#39FF14]" />
+                    </div>
+                  )}
                 </div>
 
                 {/* Track Info — Clickable to play */}
                 <button
                   className="min-w-0 flex-1 text-left cursor-pointer"
-                  onClick={() => playFromQueue(idx)}
+                  onClick={() => playTrackAtIndex(idx)}
                 >
-                  <p className="text-xs font-semibold text-white truncate leading-tight">
-                    {qMeta.title}
-                  </p>
-                  <p className="text-[11px] text-[#39FF14] font-medium truncate mt-0.5">
+                  <div className="flex items-center gap-1.5">
+                    {isCurrent && (
+                      <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-[#39FF14] text-black">
+                        Diputar
+                      </span>
+                    )}
+                    <p
+                      className={`text-xs font-semibold truncate leading-tight ${
+                        isCurrent ? "text-[#39FF14]" : isPlayed ? "text-white/70" : "text-white"
+                      }`}
+                    >
+                      {qMeta.title}
+                    </p>
+                  </div>
+                  <p className={`text-[11px] font-medium truncate mt-0.5 ${isCurrent ? "text-white/90" : "text-[#8E8E93]"}`}>
                     {qMeta.artist}
                   </p>
-                  <p className="text-[10px] text-[#8E8E93] truncate">
+                  <p className="text-[10px] text-[#8E8E93]/70 truncate">
                     {qMeta.channelInfo}
                   </p>
                 </button>

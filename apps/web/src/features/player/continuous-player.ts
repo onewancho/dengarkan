@@ -1,0 +1,147 @@
+// ============================================
+// DENGARKAN — Continuous Player Helpers
+//
+// Manages continuous audio stream URLs and cumulative timeline mapping.
+// Enables seamless, unbroken playback across tracks on mobile iOS lock screen.
+// ============================================
+
+import type { PlayableTrack } from './use-audio-engine';
+
+export interface ContinuousTimelinePosition {
+  trackIndex: number;
+  track: PlayableTrack;
+  trackTime: number;
+  trackDuration: number;
+  isLastTrack: boolean;
+}
+
+/**
+ * Detects if the current environment is iOS (iPhone, iPad, iPod) or mobile WebKit
+ * where background socket suspension makes continuous single-stream playback essential.
+ */
+export function isIosOrMobileWebKit(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  const isIos = /iPhone|iPad|iPod/i.test(ua);
+  const isMacTouch = /Macintosh/i.test(ua) && Boolean(navigator.maxTouchPoints && navigator.maxTouchPoints > 1);
+  return isIos || isMacTouch;
+}
+
+/**
+ * Builds the continuous streaming endpoint URL for the backend.
+ */
+export function buildContinuousStreamUrl(
+  tracks: PlayableTrack[],
+  startIndex: number = 0,
+  token?: string,
+  sessionId?: string,
+  seekSeconds?: number,
+  repeatMode?: 'none' | 'one' | 'all'
+): string {
+  if (tracks.length === 0) return '';
+
+  const validStart = Math.max(0, Math.min(startIndex, tracks.length - 1));
+  const activeSlice = tracks.slice(validStart);
+
+  const encodedItems = activeSlice.map((t) => {
+    const videoId = t.videoId;
+    const dur = Math.max(1, Math.round(t.durationSeconds || 180));
+    const title = encodeURIComponent(t.title || '');
+    const artist = encodeURIComponent(t.channelName || '');
+    return `${videoId}:${dur}:${title}:${artist}`;
+  });
+
+  const queryParams = new URLSearchParams({
+    tracks: encodedItems.join(','),
+    start: '0',
+  });
+
+  if (sessionId) {
+    queryParams.set('sessionId', sessionId);
+  }
+
+  if (typeof seekSeconds === 'number' && seekSeconds > 0) {
+    queryParams.set('seek', String(Math.floor(seekSeconds)));
+  }
+
+  if (repeatMode && repeatMode !== 'none') {
+    queryParams.set('repeat', repeatMode);
+  }
+
+  if (token) {
+    queryParams.set('token', token);
+  }
+
+  return `/api/audio/continuous?${queryParams.toString()}`;
+}
+
+/**
+ * Calculates the start offset timestamp in the cumulative timeline for a track at index.
+ */
+export function getContinuousTrackOffset(tracks: PlayableTrack[], index: number): number {
+  if (index <= 0 || tracks.length === 0) return 0;
+  const bound = Math.min(index, tracks.length);
+  let total = 0;
+  for (let i = 0; i < bound; i++) {
+    total += Math.max(1, tracks[i].durationSeconds || 180);
+  }
+  return total;
+}
+
+/**
+ * Maps a cumulative playback time (in seconds) to the corresponding track in the queue.
+ */
+export function mapContinuousTimeToTrack(
+  tracks: PlayableTrack[],
+  cumulativeSeconds: number,
+  repeatMode: 'none' | 'one' | 'all' = 'none'
+): ContinuousTimelinePosition | null {
+  if (tracks.length === 0) return null;
+  let safeTime = Math.max(0, cumulativeSeconds || 0);
+
+  if (repeatMode === 'one') {
+    const track = tracks[0];
+    const dur = Math.max(1, track.durationSeconds || 180);
+    const loopedTime = safeTime % dur;
+    return {
+      trackIndex: 0,
+      track,
+      trackTime: Math.min(dur, loopedTime),
+      trackDuration: dur,
+      isLastTrack: false,
+    };
+  }
+
+  const totalDuration = tracks.reduce((sum, t) => sum + Math.max(1, t.durationSeconds || 180), 0);
+  if (repeatMode === 'all' && totalDuration > 0) {
+    safeTime = safeTime % totalDuration;
+  }
+
+  let accumulated = 0;
+  for (let i = 0; i < tracks.length; i++) {
+    const track = tracks[i];
+    const dur = Math.max(1, track.durationSeconds || 180);
+    const end = accumulated + dur;
+
+    if (safeTime < end || (repeatMode === 'none' && i === tracks.length - 1)) {
+      return {
+        trackIndex: i,
+        track,
+        trackTime: Math.min(dur, Math.max(0, safeTime - accumulated)),
+        trackDuration: dur,
+        isLastTrack: i === tracks.length - 1,
+      };
+    }
+    accumulated = end;
+  }
+
+  const lastTrack = tracks[tracks.length - 1];
+  const lastDur = Math.max(1, lastTrack.durationSeconds || 180);
+  return {
+    trackIndex: tracks.length - 1,
+    track: lastTrack,
+    trackTime: lastDur,
+    trackDuration: lastDur,
+    isLastTrack: true,
+  };
+}

@@ -52,6 +52,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { isSilentAudioUri, SILENT_AUDIO_URI } from "./silent-audio.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure functions extracted from use-audio-engine.ts
@@ -94,7 +95,7 @@ function shouldAdvanceOnSeek(seconds: number, duration: number): boolean {
 }
 
 function shouldAdvanceOnWatchdog(currentTime: number, duration: number): boolean {
-  return isFinite(duration) && duration > 0 && currentTime >= duration - 0.35;
+  return isFinite(duration) && duration > 0 && currentTime >= duration - 1.5;
 }
 
 function getCanonicalDuration(metaDuration?: number, audioDuration?: number): number {
@@ -280,11 +281,12 @@ describe("Audio Engine — seek near-end auto-advance", () => {
 });
 
 describe("Audio Engine — watchdog near-end auto-advance", () => {
-  it("triggers watchdog when currentTime >= duration - 0.35", () => {
+  it("triggers watchdog when currentTime >= duration - 1.5 (catches throttled background timer on iOS)", () => {
+    assert.equal(shouldAdvanceOnWatchdog(298.7, 300), true);
     assert.equal(shouldAdvanceOnWatchdog(299.7, 300), true);
   });
-  it("does not trigger watchdog when 1s remains", () => {
-    assert.equal(shouldAdvanceOnWatchdog(299.0, 300), false);
+  it("does not trigger watchdog when >1.5s remains", () => {
+    assert.equal(shouldAdvanceOnWatchdog(298.0, 300), false);
   });
 });
 
@@ -537,4 +539,133 @@ describe("Audio Engine — getCanonicalDuration", () => {
     assert.equal(getCanonicalDuration(undefined, 187), 187);
   });
 });
+
+describe("Audio Engine — Silent Audio Keep-Alive Buffer", () => {
+  it("SILENT_AUDIO_URI is a valid data:audio/wav base64 string", () => {
+    assert.ok(SILENT_AUDIO_URI.startsWith("data:audio/wav;base64,"));
+    assert.ok(isSilentAudioUri(SILENT_AUDIO_URI));
+  });
+
+  it("isSilentAudioUri correctly distinguishes real stream URLs from silent data URI", () => {
+    assert.equal(isSilentAudioUri("https://rr1---sn-xxx.googlevideo.com/videoplayback"), false);
+    assert.equal(isSilentAudioUri("blob:http://localhost:3000/12345"), false);
+    assert.equal(isSilentAudioUri(null), false);
+    assert.equal(isSilentAudioUri(undefined), false);
+  });
+});
+
+describe("Audio Engine — Next Track Candidate Pre-resolving", () => {
+  function getNextTrackCandidate(
+    queue: PlayableTrack[],
+    history: PlayableTrack[],
+    current: PlayableTrack | null,
+    repeatMode: RepeatMode,
+    _shuffleOn?: boolean
+  ): PlayableTrack | null {
+    if (repeatMode === "one" && current) {
+      return current;
+    }
+    if (queue.length > 0) {
+      return queue[0];
+    }
+    if (repeatMode === "all") {
+      const full = current
+        ? [...[...history].reverse(), current]
+        : [...history].reverse();
+      return full[0] ?? null;
+    }
+    return null;
+  }
+
+  const track1: PlayableTrack = { videoId: "v1", title: "Song 1", channelName: "Artist", thumbnailUrl: "", durationSeconds: 180 };
+  const track2: PlayableTrack = { videoId: "v2", title: "Song 2", channelName: "Artist", thumbnailUrl: "", durationSeconds: 200 };
+  const track3: PlayableTrack = { videoId: "v3", title: "Song 3", channelName: "Artist", thumbnailUrl: "", durationSeconds: 220 };
+
+  it("picks first track from queue for upcoming prefetch", () => {
+    const candidate = getNextTrackCandidate([track2, track3], [track1], track1, "none", false);
+    assert.equal(candidate?.videoId, "v2");
+  });
+
+  it("returns current track when repeatMode is 'one'", () => {
+    const candidate = getNextTrackCandidate([track2], [], track1, "one", false);
+    assert.equal(candidate?.videoId, "v1");
+  });
+
+  it("returns first track in history when queue is empty and repeatMode is 'all'", () => {
+    // History is [t2, t1] (most recent first), so chronological is [t1, t2] + current t3
+    const candidate = getNextTrackCandidate([], [track2, track1], track3, "all", false);
+    assert.equal(candidate?.videoId, "v1");
+  });
+
+  it("returns null when queue is empty and repeatMode is 'none'", () => {
+    const candidate = getNextTrackCandidate([], [track1], track2, "none", false);
+    assert.equal(candidate, null);
+  });
+});
+
+describe("Audio Engine — Stream Cache & TTL Invalidation", () => {
+  interface MockStream {
+    videoId: string;
+    streamUrl: string;
+    expiresAt?: number;
+  }
+
+  const cache = new Map<string, { stream: MockStream; fetchedAt: number }>();
+
+  function getStream(videoId: string): MockStream | null {
+    const entry = cache.get(videoId);
+    if (!entry) return null;
+    const now = Date.now();
+    if (entry.stream.expiresAt && entry.stream.expiresAt <= now + 60_000) {
+      cache.delete(videoId);
+      return null;
+    }
+    return entry.stream;
+  }
+
+  function setStream(videoId: string, stream: MockStream): void {
+    cache.set(videoId, { stream, fetchedAt: Date.now() });
+  }
+
+  it("caches and retrieves valid stream", () => {
+    const now = Date.now();
+    setStream("v123", { videoId: "v123", streamUrl: "https://cdn.example.com/audio.m4a", expiresAt: now + 3600_000 });
+    const hit = getStream("v123");
+    assert.ok(hit !== null);
+    assert.equal(hit?.streamUrl, "https://cdn.example.com/audio.m4a");
+  });
+
+  it("expires stream if expiresAt is within 60 seconds (expiry safety buffer)", () => {
+    const now = Date.now();
+    // Expires in 30 seconds -> within the 60s safety buffer
+    setStream("vExpiring", { videoId: "vExpiring", streamUrl: "https://cdn.example.com/expiring.m4a", expiresAt: now + 30_000 });
+    const hit = getStream("vExpiring");
+    assert.equal(hit, null);
+  });
+
+  it("treats past expiresAt as expired", () => {
+    const now = Date.now();
+    setStream("vPast", { videoId: "vPast", streamUrl: "https://cdn.example.com/past.m4a", expiresAt: now - 10_000 });
+    assert.equal(getStream("vPast"), null);
+  });
+});
+
+describe("Audio Engine — Timestamp Debouncing for Lock Screen Navigation", () => {
+  function shouldDebounceAdvance(lastAdvanceTime: number, now: number, thresholdMs = 500): boolean {
+    return now - lastAdvanceTime < thresholdMs;
+  }
+
+  it("blocks rapid duplicate advances within 500ms (e.g. rapid ended + watchdog)", () => {
+    const t0 = 1000;
+    const t1 = 1200; // +200ms
+    assert.equal(shouldDebounceAdvance(t0, t1), true, "Should debounce call within 200ms");
+  });
+
+  it("allows advance after 500ms has elapsed", () => {
+    const t0 = 1000;
+    const t2 = 1600; // +600ms
+    assert.equal(shouldDebounceAdvance(t0, t2), false, "Should allow advance after 600ms");
+  });
+});
+
 

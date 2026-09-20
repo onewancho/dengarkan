@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test --experimental-strip-types src/lib/track-meta.test.ts src/features/player/audio-engine.test.ts src/features/player/media-session.test.ts src/features/playlists/playlist-queue.test.ts src/features/playlists/optimistic-playlist.test.ts",
+    "test": "node --test --experimental-strip-types src/lib/track-meta.test.ts src/features/player/audio-engine.test.ts src/features/player/media-session.test.ts src/features/playlists/playlist-queue.test.ts src/features/playlists/optimistic-playlist.test.ts src/features/player/hls-player.test.ts src/features/player/continuous-player.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

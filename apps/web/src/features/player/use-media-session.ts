@@ -87,7 +87,7 @@ export interface UseMediaSessionOptions {
 // YouTube thumbnails follow predictable URL patterns.
 // We derive multiple sizes from the base URL for best Lock Screen rendering.
 
-function buildArtwork(thumbnailUrl: string): MediaImage[] {
+export function buildArtwork(thumbnailUrl: string): MediaImage[] {
   // If it's an i.ytimg.com URL, derive all size variants
   // Standard YouTube thumbnail sizes: mqdefault(320x180), hqdefault(480x360),
   // sddefault(640x480), maxresdefault(1280x720)
@@ -104,18 +104,22 @@ function buildArtwork(thumbnailUrl: string): MediaImage[] {
   return [{ src: thumbnailUrl, sizes: "480x360", type: "image/jpeg" }];
 }
 
-// ── playbackState mapping ──────────────────────────────────────────────────────
-
-function toPlaybackState(state: PlayerState): MediaSessionPlaybackState {
+export function toPlaybackState(
+  state: PlayerState,
+  hasTrack: boolean = true
+): MediaSessionPlaybackState {
+  if (!hasTrack) return "none";
   switch (state) {
     case "playing":
     case "buffering":
+    case "loading":
+    case "refreshing":
       return "playing";
     case "paused":
     case "error":
       return "paused";
     default:
-      return "none"; // idle, loading, refreshing
+      return "none"; // idle
   }
 }
 
@@ -205,8 +209,8 @@ export function useMediaSession({
 
   useEffect(() => {
     if (!supported) return;
-    navigator.mediaSession.playbackState = toPlaybackState(playerState);
-  }, [supported, playerState]);
+    navigator.mediaSession.playbackState = toPlaybackState(playerState, Boolean(currentTrack));
+  }, [supported, playerState, currentTrack]);
 
   // ── Action handlers: register once per track (stable audio element) ────────
 

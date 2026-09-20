@@ -63,10 +63,13 @@ function buildArtwork(thumbnailUrl: string): MediaImage[] {
 type PlayerState = "idle" | "loading" | "playing" | "paused" | "buffering" | "refreshing" | "error";
 type MediaSessionPlaybackState = "none" | "paused" | "playing";
 
-function toPlaybackState(state: PlayerState): MediaSessionPlaybackState {
+function toPlaybackState(state: PlayerState, hasTrack: boolean = true): MediaSessionPlaybackState {
+  if (!hasTrack) return "none";
   switch (state) {
     case "playing":
     case "buffering":
+    case "loading":
+    case "refreshing":
       return "playing";
     case "paused":
     case "error":
@@ -195,8 +198,16 @@ describe("Media Session — toPlaybackState()", () => {
   it("paused → 'paused'",     () => assert.equal(toPlaybackState("paused"),     "paused"));
   it("error → 'paused'",      () => assert.equal(toPlaybackState("error"),      "paused"));
   it("idle → 'none'",         () => assert.equal(toPlaybackState("idle"),       "none"));
-  it("loading → 'none'",      () => assert.equal(toPlaybackState("loading"),    "none"));
-  it("refreshing → 'none'",   () => assert.equal(toPlaybackState("refreshing"), "none"));
+  it("loading → 'playing' (preserves lock screen playback during transition)", () => {
+    assert.equal(toPlaybackState("loading"), "playing");
+  });
+  it("refreshing → 'playing' (preserves lock screen playback during refresh)", () => {
+    assert.equal(toPlaybackState("refreshing"), "playing");
+  });
+  it("no track → 'none'", () => {
+    assert.equal(toPlaybackState("loading", false), "none");
+    assert.equal(toPlaybackState("idle", false), "none");
+  });
 });
 
 describe("Media Session — position validation", () => {

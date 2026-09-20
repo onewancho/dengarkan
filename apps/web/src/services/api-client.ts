@@ -88,6 +88,21 @@ export const apiClient = {
         method: "POST",
         body: JSON.stringify({ videoId }),
       }),
+    skipContinuous: (sessionId: string, nextIndex?: number): Promise<{ success: boolean }> =>
+      request("/api/audio/continuous/skip", {
+        method: "POST",
+        body: JSON.stringify({ sessionId, nextIndex }),
+      }),
+    updateContinuousQueue: (sessionId: string, tracks: unknown): Promise<{ success: boolean }> =>
+      request("/api/audio/continuous/queue", {
+        method: "POST",
+        body: JSON.stringify({ sessionId, tracks }),
+      }),
+    setContinuousRepeat: (sessionId: string, repeatMode: string): Promise<{ success: boolean }> =>
+      request("/api/audio/continuous/repeat", {
+        method: "POST",
+        body: JSON.stringify({ sessionId, repeatMode }),
+      }),
   },
 
   playlists: {

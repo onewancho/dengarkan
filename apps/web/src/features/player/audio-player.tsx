@@ -50,6 +50,7 @@ export function AudioPlayer() {
     setRepeatMode,
     playFromQueue,
     playTrackAtIndex,
+    getCurrentTime,
   } = usePlayer();
 
   const [isExpanded, setIsExpanded] = useState(false);
@@ -183,9 +184,9 @@ export function AudioPlayer() {
 
   const seekBy = useCallback((offsetSeconds: number) => {
     const audio = audioRef.current;
-    const cur = (audio && isFinite(audio.currentTime)) ? audio.currentTime : 0;
+    const cur = getCurrentTime ? getCurrentTime() : ((audio && isFinite(audio.currentTime)) ? audio.currentTime : 0);
     seek(cur + offsetSeconds);
-  }, [seek, audioRef]);
+  }, [seek, audioRef, getCurrentTime]);
 
   // Lock body scroll and handle Escape / Arrow keys when full player is open
   useEffect(() => {
@@ -225,7 +226,7 @@ export function AudioPlayer() {
     function syncDOM() {
       const audio = audioRef.current;
       if (audio) {
-        const cur = (audio && isFinite(audio.currentTime)) ? audio.currentTime : 0;
+        const cur = getCurrentTime ? getCurrentTime() : ((audio && isFinite(audio.currentTime)) ? audio.currentTime : 0);
         const metaDur = (currentTrack?.durationSeconds && currentTrack.durationSeconds > 0)
           ? currentTrack.durationSeconds
           : (duration || 0);

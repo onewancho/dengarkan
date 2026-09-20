@@ -20,7 +20,9 @@ export async function authMiddleware(
   _done?: unknown,
   options?: AuthMiddlewareOptions
 ): Promise<void> {
-  const token = request.cookies?.session_token;
+  const token =
+    request.cookies?.session_token ||
+    (request.query as Record<string, string> | undefined)?.token;
 
   if (!token) {
     await reply.status(401).send({

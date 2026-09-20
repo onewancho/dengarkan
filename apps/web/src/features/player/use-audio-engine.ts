@@ -1065,7 +1065,11 @@ export function useAudioEngine(): AudioEngine {
       // (As verified in Mac Web Inspector on iOS: PAUSE at 246.7s / 246.7s right before ENDED).
       // If we set playerState to 'paused' here, MediaSession tells iOS lock screen that
       // the user paused, causing iOS to suspend the tab before 'ended' can load the next track!
-      if (audio.ended || (isFinite(dur) && dur > 0 && audio.currentTime >= dur - 0.8)) {
+      if (
+        audio.ended ||
+        (isFinite(dur) && dur > 0 && audio.currentTime >= dur - 0.8) ||
+        (isFinite(audio.duration) && audio.duration > 0 && audio.currentTime >= audio.duration - 0.8)
+      ) {
         return;
       }
 
@@ -1120,8 +1124,24 @@ export function useAudioEngine(): AudioEngine {
 
     const onTimeUpdate = () => {
       if (isKeepAliveRef.current || isAdvancingRef.current) return;
-      // Let track play to completion and fire 'ended' naturally, matching YouTube behavior.
-      // WebKit grants media activation continuation specifically within the 'ended' event handler.
+      const cur = audio.currentTime;
+      const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
+      const canonicalDur = getCanonicalDuration(meta, audio.duration);
+
+      // Detect end of real audio content:
+      // In Safari iOS, YouTube streams often suffer from a timescale decoding bug
+      // where audio.duration is doubled (e.g. 5:45 instead of 2:53).
+      // At 2:53, audio samples physically finish, but Safari does not emit 'ended' because
+      // it thinks the track is 5:45 long. Without this, playback continues in silence until 5:45.
+      if (isFinite(canonicalDur) && canonicalDur > 0 && cur >= canonicalDur - 0.5) {
+        console.log(`[MEDIA EVENT] REAL END REACHED: ${cur.toFixed(1)}s / ${canonicalDur.toFixed(1)}s (audio.duration: ${audio.duration.toFixed(1)}s)`);
+        if (isFinite(audio.duration) && audio.duration > canonicalDur * 1.2) {
+          try {
+            audio.currentTime = audio.duration;
+          } catch {}
+        }
+        void advanceNextRef.current();
+      }
     };
 
     // ── Error: stream refresh flow ────────────────────────────────────────

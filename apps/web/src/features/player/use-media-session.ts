@@ -184,6 +184,18 @@ export function useMediaSession({
 
   // Throttle position updates — max once per second
   const lastPositionUpdate = useRef(0);
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
+
+  // Immediately push position state whenever canonical duration becomes available
+  useEffect(() => {
+    durationRef.current = duration;
+    if (!supported || duration <= 0) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    const pos = getCurrentTime ? getCurrentTime() : audio.currentTime;
+    safeSetPositionState(audio, duration, pos);
+  }, [supported, duration, audioRef, getCurrentTime]);
 
   // ── One-time setup: set audioSession type for iOS ──────────────────────────
   // navigator.audioSession.type = "playback" enables background playback
@@ -248,32 +260,32 @@ export function useMediaSession({
       } else {
         audio.currentTime = target;
       }
-      safeSetPositionState(audio, duration, target);
+      safeSetPositionState(audio, durationRef.current, target);
     });
 
     safeSetHandler("seekforward", (details) => {
       const offset = details?.seekOffset ?? SEEK_STEP;
       const cur = getCurrentTime ? getCurrentTime() : audio.currentTime;
-      const dur = duration > 0 ? duration : (isFinite(audio.duration) ? audio.duration : Infinity);
-      const target = Math.min(dur, cur + offset);
+      const currentDur = durationRef.current > 0 ? durationRef.current : (duration > 0 ? duration : (isFinite(audio.duration) ? audio.duration : Infinity));
+      const target = Math.min(currentDur, cur + offset);
       if (onSeek) {
         onSeek(target);
       } else {
         audio.currentTime = target;
       }
-      safeSetPositionState(audio, duration, target);
+      safeSetPositionState(audio, durationRef.current, target);
     });
 
     safeSetHandler("seekto", (details) => {
       if (details?.seekTime == null || !isFinite(details.seekTime)) return;
-      const dur = duration > 0 ? duration : (isFinite(audio.duration) ? audio.duration : Infinity);
-      const target = Math.max(0, Math.min(details.seekTime, dur));
+      const currentDur = durationRef.current > 0 ? durationRef.current : (duration > 0 ? duration : (isFinite(audio.duration) ? audio.duration : Infinity));
+      const target = Math.max(0, Math.min(details.seekTime, currentDur));
       if (onSeek) {
         onSeek(target);
       } else {
         audio.currentTime = target;
       }
-      safeSetPositionState(audio, duration, target);
+      safeSetPositionState(audio, durationRef.current, target);
     });
 
     // Cleanup: null out all handlers when track changes or component unmounts
@@ -301,14 +313,14 @@ export function useMediaSession({
       if (now - lastPositionUpdate.current < 900) return;
       lastPositionUpdate.current = now;
       const pos = getCurrentTime ? getCurrentTime() : audio.currentTime;
-      safeSetPositionState(audio, duration, pos);
+      safeSetPositionState(audio, durationRef.current, pos);
     };
 
     const updatePositionImmediate = () => {
       // For seek/play/pause events — update immediately (no throttle)
       lastPositionUpdate.current = Date.now();
       const pos = getCurrentTime ? getCurrentTime() : audio.currentTime;
-      safeSetPositionState(audio, duration, pos);
+      safeSetPositionState(audio, durationRef.current, pos);
     };
 
     audio.addEventListener("timeupdate",     updatePosition);

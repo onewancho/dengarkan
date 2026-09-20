@@ -94,7 +94,7 @@ export function buildArtwork(thumbnailUrl: string): MediaImage[] {
   // Standard YouTube thumbnail sizes: mqdefault(320x180), hqdefault(480x360),
   // sddefault(640x480), maxresdefault(1280x720)
   if (thumbnailUrl.includes("i.ytimg.com/vi/")) {
-    const base = thumbnailUrl.replace(/\/(hqdefault|mqdefault|sddefault|maxresdefault|default)(\.\w+)?$/, "");
+    const base = thumbnailUrl.replace(/\/(hq720|hqdefault|mqdefault|sddefault|maxresdefault|default)(\.\w+)?$/, "");
     return [
       { src: `${base}/mqdefault.jpg`,     sizes: "320x180",  type: "image/jpeg" },
       { src: `${base}/hqdefault.jpg`,     sizes: "480x360",  type: "image/jpeg" },

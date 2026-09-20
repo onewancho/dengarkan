@@ -561,6 +561,7 @@ export function useAudioEngine(): AudioEngine {
 
       if (!isSameSrc) {
         audio.src = targetSrc;
+        audio.load();
       }
 
       console.log(`[SONG CHANGED] Judul: ${track.title} | Artis: ${track.channelName || "Dengarkan"}`);
@@ -570,11 +571,7 @@ export function useAudioEngine(): AudioEngine {
         const initialSeek = typeof startOffsetSeconds === "number" && startOffsetSeconds > 0
           ? startOffsetSeconds
           : 0;
-        if (initialSeek > 0) {
-          audio.currentTime = initialSeek;
-        } else if (isSameSrc) {
-          audio.currentTime = 0;
-        }
+        audio.currentTime = initialSeek;
       } catch { /* ignore InvalidStateError in Safari */ }
 
       setPlayerState("playing");
@@ -857,7 +854,7 @@ export function useAudioEngine(): AudioEngine {
 
   const advanceNext = useCallback(async () => {
     const now = Date.now();
-    if (isAdvancingRef.current || now - lastAdvanceTimeRef.current < 500) return;
+    if (isAdvancingRef.current || now - lastAdvanceTimeRef.current < 2500) return;
     lastAdvanceTimeRef.current = now;
     isAdvancingRef.current = true;
 
@@ -1047,7 +1044,9 @@ export function useAudioEngine(): AudioEngine {
     // ── State machine transitions ─────────────────────────────────────────
 
     const onPlaying = () => {
-      isAdvancingRef.current = false;
+      setTimeout(() => {
+        isAdvancingRef.current = false;
+      }, 1000);
       if (isKeepAliveRef.current) return;
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const dur = getCanonicalDuration(meta, audio.duration);
@@ -1129,17 +1128,14 @@ export function useAudioEngine(): AudioEngine {
       const canonicalDur = getCanonicalDuration(meta, audio.duration);
 
       // Detect end of real audio content:
-      // In Safari iOS, YouTube streams often suffer from a timescale decoding bug
-      // where audio.duration is doubled (e.g. 5:45 instead of 2:53).
-      // At 2:53, audio samples physically finish, but Safari does not emit 'ended' because
-      // it thinks the track is 5:45 long. Without this, playback continues in silence until 5:45.
-      if (isFinite(canonicalDur) && canonicalDur > 0 && cur >= canonicalDur - 0.5) {
+      // Track must have played for at least 5 seconds before end detection can fire.
+      if (
+        isFinite(canonicalDur) &&
+        canonicalDur > 5 &&
+        cur >= 5 &&
+        cur >= canonicalDur - 0.5
+      ) {
         console.log(`[MEDIA EVENT] REAL END REACHED: ${cur.toFixed(1)}s / ${canonicalDur.toFixed(1)}s (audio.duration: ${audio.duration.toFixed(1)}s)`);
-        if (isFinite(audio.duration) && audio.duration > canonicalDur * 1.2) {
-          try {
-            audio.currentTime = audio.duration;
-          } catch {}
-        }
         void advanceNextRef.current();
       }
     };

@@ -47,7 +47,7 @@ type MediaImage = { src: string; sizes: string; type: string };
 
 function buildArtwork(thumbnailUrl: string): MediaImage[] {
   if (thumbnailUrl.includes("i.ytimg.com/vi/")) {
-    const base = thumbnailUrl.replace(/\/(hqdefault|mqdefault|sddefault|maxresdefault|default)(\.\w+)?$/, "");
+    const base = thumbnailUrl.replace(/\/(hq720|hqdefault|mqdefault|sddefault|maxresdefault|default)(\.\w+)?$/, "");
     return [
       { src: `${base}/mqdefault.jpg`,     sizes: "320x180",  type: "image/jpeg" },
       { src: `${base}/hqdefault.jpg`,     sizes: "480x360",  type: "image/jpeg" },
@@ -129,6 +129,13 @@ describe("Media Session — buildArtwork()", () => {
   it("mqdefault URL → 4 size variants", () => {
     const artwork = buildArtwork(`${BASE_URL}/mqdefault.jpg`);
     assert.equal(artwork.length, 4);
+  });
+
+  it("hq720 URL → 4 size variants without malformed nested path", () => {
+    const artwork = buildArtwork(`${BASE_URL}/hq720.jpg`);
+    assert.equal(artwork.length, 4);
+    assert.equal(artwork[0].src, `${BASE_URL}/mqdefault.jpg`);
+    assert.ok(!artwork[0].src.includes("hq720.jpg/"));
   });
 
   it("maxresdefault URL → 4 size variants", () => {

@@ -9,7 +9,7 @@
 // ============================================
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import ffmpegPath from 'ffmpeg-static';
+import { getFfmpegPath, isFfmpegAvailable } from './ffmpeg-helper.js';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { audioResolver } from './resolver.js';
 import { ResolverError } from './errors.js';
@@ -88,12 +88,24 @@ export async function streamHlsSegment(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<unknown> {
-  if (!ffmpegPath) {
-    request.log.error('ffmpeg-static binary path is not available');
-    return reply.status(500).send({
-      error: 'SERVER_ERROR',
-      message: 'Media processor is not available',
-      statusCode: 500,
+  if (!isFfmpegAvailable()) {
+    request.log.error('FFmpeg binary is not available on this server');
+    return reply.status(503).send({
+      error: 'MEDIA_PROCESSOR_UNAVAILABLE',
+      message: 'FFmpeg is not available on this server. Please install ffmpeg or set FFMPEG_PATH.',
+      statusCode: 503,
+    });
+  }
+
+  let ffmpegExecutable: string;
+  try {
+    ffmpegExecutable = getFfmpegPath();
+  } catch (err) {
+    request.log.error({ err }, 'Failed to resolve FFmpeg path');
+    return reply.status(503).send({
+      error: 'MEDIA_PROCESSOR_UNAVAILABLE',
+      message: 'FFmpeg executable could not be resolved.',
+      statusCode: 503,
     });
   }
 
@@ -114,6 +126,8 @@ export async function streamHlsSegment(
 
   const ffmpegArgs: string[] = [
     '-loglevel', 'error',
+    '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    '-headers', 'Referer: https://www.youtube.com/\r\n',
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
@@ -134,11 +148,11 @@ export async function streamHlsSegment(
   let ffmpegProcess: ChildProcess | null = null;
 
   try {
-    ffmpegProcess = spawn(ffmpegPath, ffmpegArgs, {
+    ffmpegProcess = spawn(ffmpegExecutable, ffmpegArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (spawnError) {
-    request.log.error({ err: spawnError }, 'Failed to spawn ffmpeg-static');
+    request.log.error({ err: spawnError }, 'Failed to spawn ffmpeg');
     return reply.status(500).send({
       error: 'PROCESS_ERROR',
       message: 'Failed to initialize audio stream processor',

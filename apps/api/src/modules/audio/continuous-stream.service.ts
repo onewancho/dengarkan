@@ -10,7 +10,7 @@
 // ============================================
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import ffmpegPath from 'ffmpeg-static';
+import { getFfmpegPath, isFfmpegAvailable } from './ffmpeg-helper.js';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { audioResolver } from './resolver.js';
 
@@ -112,12 +112,24 @@ export async function streamContinuousQueue(
   initialSeekSeconds?: number,
   repeatMode?: 'none' | 'one' | 'all'
 ): Promise<void> {
-  if (!ffmpegPath) {
-    request.log.error('ffmpeg-static binary path is not available');
-    return reply.status(500).send({
-      error: 'SERVER_ERROR',
-      message: 'Media processor is not available',
-      statusCode: 500,
+  if (!isFfmpegAvailable()) {
+    request.log.error('FFmpeg binary is not available on this server');
+    return reply.status(503).send({
+      error: 'MEDIA_PROCESSOR_UNAVAILABLE',
+      message: 'FFmpeg is not available on this server. Please install ffmpeg or set FFMPEG_PATH.',
+      statusCode: 503,
+    });
+  }
+
+  let ffmpegExecutable: string;
+  try {
+    ffmpegExecutable = getFfmpegPath();
+  } catch (err) {
+    request.log.error({ err }, 'Failed to resolve FFmpeg path');
+    return reply.status(503).send({
+      error: 'MEDIA_PROCESSOR_UNAVAILABLE',
+      message: 'FFmpeg executable could not be resolved.',
+      statusCode: 503,
     });
   }
 
@@ -167,15 +179,7 @@ export async function streamContinuousQueue(
   request.raw.on('close', cleanup);
   request.raw.on('aborted', cleanup);
 
-  // Send initial HTTP headers for continuous MP3 streaming
-  rawRes.writeHead(200, {
-    'Content-Type': 'audio/mpeg',
-    'Transfer-Encoding': 'chunked',
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-    'Access-Control-Allow-Origin': '*',
-    'X-Content-Type-Options': 'nosniff',
-  });
-
+  let headersSent = false;
   let isFirstTrack = true;
 
   while (!session.isAborted && !rawRes.destroyed && !rawRes.writableEnded) {
@@ -218,6 +222,8 @@ export async function streamContinuousQueue(
     isFirstTrack = false;
 
     ffmpegArgs.push(
+      '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      '-headers', 'Referer: https://www.youtube.com/\r\n',
       '-fflags', 'nobuffer',
       '-probesize', '32k',
       '-analyzeduration', '0',
@@ -236,13 +242,23 @@ export async function streamContinuousQueue(
 
     try {
       await new Promise<void>((resolve) => {
-        const proc = spawn(ffmpegPath!, ffmpegArgs, {
+        const proc = spawn(ffmpegExecutable, ffmpegArgs, {
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         session.activeProcess = proc;
 
         proc.stdout?.on('data', (chunk: Buffer) => {
           if (!rawRes.destroyed && !rawRes.writableEnded) {
+            if (!headersSent) {
+              headersSent = true;
+              rawRes.writeHead(200, {
+                'Content-Type': 'audio/mpeg',
+                'Transfer-Encoding': 'chunked',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Access-Control-Allow-Origin': '*',
+                'X-Content-Type-Options': 'nosniff',
+              });
+            }
             rawRes.write(chunk);
           }
         });
@@ -256,8 +272,11 @@ export async function streamContinuousQueue(
           resolve();
         });
 
-        proc.on('close', () => {
+        proc.on('close', (code) => {
           session.activeProcess = null;
+          if (code !== 0 && code !== null) {
+            request.log.warn({ exitCode: code, videoId: currentTrack.videoId }, 'FFmpeg stream process exited');
+          }
           resolve();
         });
       });
@@ -284,7 +303,14 @@ export async function streamContinuousQueue(
     }
   }
 
-  if (!rawRes.destroyed && !rawRes.writableEnded) {
+  if (!headersSent && !rawRes.destroyed && !rawRes.writableEnded) {
+    rawRes.writeHead(503, { 'Content-Type': 'application/json' });
+    rawRes.end(JSON.stringify({
+      error: 'STREAM_UNAVAILABLE',
+      message: 'Continuous audio processor failed to stream track.',
+      statusCode: 503,
+    }));
+  } else if (!rawRes.destroyed && !rawRes.writableEnded) {
     rawRes.end();
   }
   activeSessions.delete(sid);

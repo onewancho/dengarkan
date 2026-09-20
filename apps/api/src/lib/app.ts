@@ -17,6 +17,7 @@ import { authRoutes }     from '../modules/auth/routes.js';
 import { youtubeRoutes }  from '../modules/youtube/routes.js';
 import { audioRoutes }    from '../modules/audio/routes.js';
 import { playlistRoutes } from '../modules/playlists/routes.js';
+import { isFfmpegAvailable } from '../modules/audio/ffmpeg-helper.js';
 
 export interface AppOptions {
   /** Disable logger for tests */
@@ -143,6 +144,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   // ── Health ─────────────────────────────────────────────────────────────────
   app.get('/api/health', async () => ({
     status: 'ok',
+    ffmpeg: isFfmpegAvailable(),
     timestamp: new Date().toISOString(),
   }));
 

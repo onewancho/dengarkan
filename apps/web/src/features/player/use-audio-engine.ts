@@ -396,6 +396,7 @@ export function useAudioEngine(): AudioEngine {
   const continuousTracksRef    = useRef<PlayableTrack[]>([]);
   const continuousOffsetRef    = useRef(0);
   const continuousSessionIdRef = useRef<string>("");
+  const continuousFailedRef    = useRef(false);
 
   // Sync refs synchronously every render to prevent any stale closures
   currentTrackRef.current  = currentTrack;
@@ -574,16 +575,7 @@ export function useAudioEngine(): AudioEngine {
 
   // ── Core: resolve stream and play ─────────────────────────────────────────
 
-  const loadTrack = useCallback(async (track: PlayableTrack) => {
-    if (isIosOrMobileWebKit()) {
-      let q = queueStateRef.current.queue;
-      if (shuffleOnRef.current && q.length > 1) {
-        q = shuffleArray(q, true);
-      }
-      await startContinuousStream([track, ...q], 0);
-      return;
-    }
-
+  const directLoadTrack = useCallback(async (track: PlayableTrack) => {
     setCurrentTrack(track);
     setDuration(track.durationSeconds || 0);
 
@@ -655,7 +647,19 @@ export function useAudioEngine(): AudioEngine {
     } catch {
       setPlayerState("error");
     }
-  }, [startContinuousStream]);
+  }, [fetchStreamWithCache, getCachedStream]);
+
+  const loadTrack = useCallback(async (track: PlayableTrack) => {
+    if (isIosOrMobileWebKit() && !continuousFailedRef.current) {
+      let q = queueStateRef.current.queue;
+      if (shuffleOnRef.current && q.length > 1) {
+        q = shuffleArray(q, true);
+      }
+      await startContinuousStream([track, ...q], 0);
+      return;
+    }
+    await directLoadTrack(track);
+  }, [directLoadTrack, startContinuousStream]);
 
   // playTrack = loadTrack + optionally reset queue
   const playTrack = useCallback(async (track: PlayableTrack, resetQueue = false) => {
@@ -665,7 +669,7 @@ export function useAudioEngine(): AudioEngine {
       dispatchQueue({ type: "PUSH_HISTORY", track: currentTrackRef.current });
     }
 
-    if (isIosOrMobileWebKit()) {
+    if (isIosOrMobileWebKit() && !continuousFailedRef.current) {
       let remainingQueue = resetQueue ? [] : queueStateRef.current.queue;
       if (shuffleOnRef.current && remainingQueue.length > 1) {
         remainingQueue = shuffleArray(remainingQueue, true);
@@ -692,7 +696,7 @@ export function useAudioEngine(): AudioEngine {
       remaining = shuffleArray(remaining, true);
     }
 
-    if (isIosOrMobileWebKit()) {
+    if (isIosOrMobileWebKit() && !continuousFailedRef.current) {
       await startContinuousStream([current, ...remaining], 0);
     } else {
       await loadTrack(current);
@@ -1169,7 +1173,7 @@ export function useAudioEngine(): AudioEngine {
       queue: newQueue,
     });
 
-    if (isIosOrMobileWebKit() || continuousActiveRef.current) {
+    if ((isIosOrMobileWebKit() && !continuousFailedRef.current) || continuousActiveRef.current) {
       await startContinuousStream([target, ...newQueue], 0);
     } else {
       await loadTrack(target);
@@ -1305,6 +1309,23 @@ export function useAudioEngine(): AudioEngine {
       const track = currentTrackRef.current;
       if (!track)                  { setPlayerState("error"); return; }
       if (refreshingRef.current)   { return; } // already refreshing
+
+      // If continuous stream failed, mark as failed and fallback immediately to direct stream
+      if (continuousActiveRef.current) {
+        console.warn("Continuous audio stream failed; falling back to direct stream playback");
+        continuousActiveRef.current = false;
+        continuousFailedRef.current = true;
+        try {
+          const fresh = await apiClient.audio.resolve(track.videoId);
+          setCurrentStream(fresh);
+          audio.src = fresh.streamUrl;
+          setPlayerState("playing");
+          await audio.play();
+          return;
+        } catch {
+          // continue to retry flow below
+        }
+      }
 
       const savedTime  = audio.currentTime;
       const wasPlaying = !audio.paused;

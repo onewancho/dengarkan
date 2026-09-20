@@ -155,7 +155,7 @@ function queueReducer(state: QueueState, action: QueueAction): QueueState {
     case "ADVANCE_NEXT": {
       const { queue, shuffleOn } = state;
       if (queue.length === 0) return { ...state, nextTrack: null };
-      let idx = typeof action.chosenIndex === "number" && action.chosenIndex >= 0 && action.chosenIndex < queue.length
+      const idx = typeof action.chosenIndex === "number" && action.chosenIndex >= 0 && action.chosenIndex < queue.length
         ? action.chosenIndex
         : (shuffleOn ? Math.floor(Math.random() * queue.length) : 0);
       const nextTrack = queue[idx];

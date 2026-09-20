@@ -65,8 +65,8 @@ export function parseTrackMeta(
   let artist = cleanChannel;
 
   if (sepMatch && sepMatch.index !== undefined) {
-    let p1 = cleanClutter(cleaned.slice(0, sepMatch.index));
-    let p2 = cleanClutter(cleaned.slice(sepMatch.index + sepMatch[0].length));
+    const p1 = cleanClutter(cleaned.slice(0, sepMatch.index));
+    const p2 = cleanClutter(cleaned.slice(sepMatch.index + sepMatch[0].length));
 
     if (p1 && p2) {
       const p1Lower = p1.toLowerCase();

@@ -14,7 +14,6 @@ export const metadata: Metadata = {
   title: "Dengarkan — Putar Musik & Podcast YouTube-mu tanpa batas",
   description:
     "Aplikasi audio YouTube sederhana, cepat, ringan, dan nyaman digunakan satu tangan. Putar musik dan podcast tanpa video bloat.",
-  manifest: undefined, // Explicitly no manifest — NOT a standalone PWA
 };
 
 export const viewport: Viewport = {

@@ -25,7 +25,7 @@ function TabBar() {
 
   const isSearch    = pathname === "/app";
   const isQueue     = pathname === "/app/queue";
-  const isPlaylists = pathname.startsWith("/app/playlists");
+  const isPlaylists = pathname ? pathname.startsWith("/app/playlists") : false;
 
   return (
     <nav

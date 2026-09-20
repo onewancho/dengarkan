@@ -425,7 +425,6 @@ export function useAudioEngine(): AudioEngine {
   const isAdvancingRef   = useRef(false);
   const isKeepAliveRef   = useRef(false);
   const lastAdvanceTimeRef = useRef(0);
-  const lastCurrentTimeRef = useRef(0);
   const advanceNextRef   = useRef<() => Promise<void>>(() => Promise.resolve());
 
 
@@ -540,18 +539,13 @@ export function useAudioEngine(): AudioEngine {
 
     if (audio) {
       isKeepAliveRef.current = false;
-      // Always loop to keep iOS Safari audio session alive during lock screen.
-      // Browser native loop prevents 'ended' event and keeps the media pipeline active,
-      // giving us a safe window to advance to the next track.
-      audio.loop = true;
+      audio.loop = (repeatModeRef.current === "one");
       const targetSrc = getProxyStreamUrl(track.videoId);
       const isSameSrc = typeof window !== "undefined" && audio.src === new URL(targetSrc, window.location.href).href;
 
       if (!isSameSrc) {
         audio.src = targetSrc;
       }
-      // Reset loop detection ref so we don't false-trigger on the new track
-      lastCurrentTimeRef.current = 0;
 
       try {
         const initialSeek = typeof startOffsetSeconds === "number" && startOffsetSeconds > 0
@@ -833,8 +827,10 @@ export function useAudioEngine(): AudioEngine {
     setRepeatModeState(m);
     repeatModeRef.current = m;
     try { localStorage.setItem(REPEAT_KEY, m); } catch { /* ignore */ }
-    // audio.loop is always true — managed by directLoadTrack.
-    // This keeps iOS lock screen audio session alive across all repeat modes.
+    const audio = audioRef.current;
+    if (audio) {
+      audio.loop = (m === "one");
+    }
   }, []);
 
   // ── Navigation ────────────────────────────────────────────────────────────
@@ -852,10 +848,17 @@ export function useAudioEngine(): AudioEngine {
       const shuffleOn = shuffleOnRef.current;
       const { queue, history } = queueStateRef.current;
 
-      // 1. repeat=one → browser native loop handles it (audio.loop = true)
-      // WebKit loops at the media pipeline level — no JavaScript needed.
-      // The browser already restarted the track before this code runs.
+      // 1. repeat=one → restart current track synchronously (works seamlessly on iOS lock screen)
       if (repeat === "one" && current) {
+        if (audio) {
+          audio.currentTime = 0;
+          try {
+            const playPromise = audio.play();
+            if (playPromise) await playPromise;
+          } catch (e) {
+            console.error("Failed to replay track in repeat=one", e);
+          }
+        }
         return;
       }
 
@@ -924,10 +927,9 @@ export function useAudioEngine(): AudioEngine {
         }
       }
 
-      // 4. End of queue: disable loop and stop playback
+      // 4. End of queue: stop playback and go idle
       dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
       if (audio) {
-        audio.loop = false;  // Allow track to truly end
         audio.pause();
         audio.src = "";
       }
@@ -1069,38 +1071,14 @@ export function useAudioEngine(): AudioEngine {
       void advanceNextRef.current();
     };
 
-    // ── TimeUpdate: loop boundary detection + near-end watchdog ─────────
-    // With audio.loop = true, the browser natively loops the track when it
-    // ends (no 'ended' event fires). We detect this loop by watching for
-    // currentTime jumping from near-end to near-start. This is the safe
-    // window to advance tracks — the audio session is still alive because
-    // the browser just looped.
+    // ── TimeUpdate watchdog: fallback if browser delays ended event ─
 
     const onTimeUpdate = () => {
       if (isKeepAliveRef.current || isAdvancingRef.current) return;
       const cur = audio.currentTime;
-      const lastTime = lastCurrentTimeRef.current;
-      lastCurrentTimeRef.current = cur;
-
-      const meta = currentStreamRef.current?.durationSeconds
-        || currentTrackRef.current?.durationSeconds || 0;
+      const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const dur = getCanonicalDuration(meta, audio.duration);
-      if (!isFinite(dur) || dur <= 0) return;
-
-      // PRIMARY: Loop boundary detection (works on iOS lock screen!)
-      // When the browser native-loops (audio.loop=true), currentTime jumps
-      // from near-end back to near-start. The audio session is ALIVE because
-      // the browser just looped — this is the safe moment to advance.
-      if (dur > 5 && lastTime > dur - 2 && cur < 2) {
-        void advanceNextRef.current();
-        return;
-      }
-
-      // SECONDARY: Near-end watchdog (foreground fast path)
-      // Tries to advance BEFORE loop happens for smoother foreground transitions.
-      // On lock screen this may not fire (JS throttled), but the loop detection
-      // above will catch it when it does.
-      if (cur >= dur - 0.35) {
+      if (isFinite(dur) && dur > 0 && cur >= dur - 0.35) {
         void advanceNextRef.current();
       }
     };

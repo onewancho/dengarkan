@@ -499,6 +499,19 @@ export function useAudioEngine(): AudioEngine {
     audio.setAttribute("webkit-playsinline", "");
     const saved = parseFloat(localStorage.getItem(VOLUME_KEY) ?? String(DEFAULT_VOLUME));
     audio.volume = isFinite(saved) && saved >= 0 && saved <= 1 ? saved : DEFAULT_VOLUME;
+
+    // Attach to DOM so WebKit treats it as an active document media element,
+    // preventing aggressive background tab suspension in iOS Safari
+    if (typeof document !== "undefined" && document.body) {
+      audio.style.position = "fixed";
+      audio.style.width = "0px";
+      audio.style.height = "0px";
+      audio.style.opacity = "0";
+      audio.style.pointerEvents = "none";
+      audio.setAttribute("aria-hidden", "true");
+      document.body.appendChild(audio);
+    }
+
     audioRef.current = audio;
 
     return () => {
@@ -507,6 +520,9 @@ export function useAudioEngine(): AudioEngine {
       audio.loop = false;
       audio.src = "";
       audio.load();
+      if (audio.parentNode) {
+        audio.parentNode.removeChild(audio);
+      }
       audioRef.current = null;
     };
   }, []);
@@ -547,6 +563,9 @@ export function useAudioEngine(): AudioEngine {
         audio.src = targetSrc;
       }
 
+      console.log(`[SONG CHANGED] Judul: ${track.title} | Artis: ${track.channelName || "Dengarkan"}`);
+      console.log(`[MEDIA EVENT] PLAY | Time: ${audio.currentTime.toFixed(1)}s / ${isNaN(audio.duration) ? "NaNs" : audio.duration.toFixed(1) + "s"} | Paused: false`);
+
       try {
         const initialSeek = typeof startOffsetSeconds === "number" && startOffsetSeconds > 0
           ? startOffsetSeconds
@@ -565,6 +584,7 @@ export function useAudioEngine(): AudioEngine {
           await playPromise;
         }
       } catch (e) {
+        isAdvancingRef.current = false;
         console.warn("Audio play failed on direct load:", e);
       }
     }
@@ -935,7 +955,13 @@ export function useAudioEngine(): AudioEngine {
       }
       setPlayerState("idle");
     } finally {
-      isAdvancingRef.current = false;
+      // NOTE: Do not clear isAdvancingRef synchronously here.
+      // Changing audio.src emits asynchronous internal 'pause' events in WebKit.
+      // isAdvancingRef is cleared when 'onPlaying' or 'onError' fires for the new track.
+      // As a fallback guard, reset after 10s timeout if neither fired.
+      setTimeout(() => {
+        isAdvancingRef.current = false;
+      }, 10_000);
     }
   }, [directLoadTrack]);
 
@@ -1023,15 +1049,33 @@ export function useAudioEngine(): AudioEngine {
     const onPlaying = () => {
       isAdvancingRef.current = false;
       if (isKeepAliveRef.current) return;
+      const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
+      const dur = getCanonicalDuration(meta, audio.duration);
+      console.log(`[MEDIA EVENT] PLAYING | Time: ${audio.currentTime.toFixed(1)}s / ${dur.toFixed(1)}s | Paused: false`);
       setPlayerState("playing");
     };
 
     const onPause = () => {
+      const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
+      const dur = getCanonicalDuration(meta, audio.duration);
+      console.log(`[MEDIA EVENT] PAUSE | Time: ${audio.currentTime.toFixed(1)}s / ${dur.toFixed(1)}s | Paused: true`);
       if (isKeepAliveRef.current || isAdvancingRef.current) return;
+
+      // Safari/WebKit always fires 'pause' right before 'ended' at the end of the track.
+      // (As verified in Mac Web Inspector on iOS: PAUSE at 246.7s / 246.7s right before ENDED).
+      // If we set playerState to 'paused' here, MediaSession tells iOS lock screen that
+      // the user paused, causing iOS to suspend the tab before 'ended' can load the next track!
+      if (audio.ended || (isFinite(dur) && dur > 0 && audio.currentTime >= dur - 0.8)) {
+        return;
+      }
+
       setPlayerState((prev) => (prev === "refreshing" ? prev : "paused"));
     };
 
     const onWaiting = () => {
+      const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
+      const dur = getCanonicalDuration(meta, audio.duration);
+      console.log(`[MEDIA EVENT] WAITING | Time: ${audio.currentTime.toFixed(1)}s / ${dur.toFixed(1)}s | Paused: false`);
       if (isKeepAliveRef.current || isAdvancingRef.current) return;
       setPlayerState("buffering");
     };
@@ -1067,25 +1111,23 @@ export function useAudioEngine(): AudioEngine {
     // ── Ended: auto-advance to next track ──────────────────────────────────
 
     const onEnded = () => {
+      const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
+      const dur = getCanonicalDuration(meta, audio.duration);
+      console.log(`[MEDIA EVENT] ENDED | Time: ${audio.currentTime.toFixed(1)}s / ${dur.toFixed(1)}s | Paused: true`);
       if (isKeepAliveRef.current) return;
       void advanceNextRef.current();
     };
 
-    // ── TimeUpdate watchdog: fallback if browser delays ended event ─
-
     const onTimeUpdate = () => {
       if (isKeepAliveRef.current || isAdvancingRef.current) return;
-      const cur = audio.currentTime;
-      const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
-      const dur = getCanonicalDuration(meta, audio.duration);
-      if (isFinite(dur) && dur > 0 && cur >= dur - 0.35) {
-        void advanceNextRef.current();
-      }
+      // Let track play to completion and fire 'ended' naturally, matching YouTube behavior.
+      // WebKit grants media activation continuation specifically within the 'ended' event handler.
     };
 
     // ── Error: stream refresh flow ────────────────────────────────────────
 
     const onError = async () => {
+      isAdvancingRef.current = false;
       const track = currentTrackRef.current;
       if (!track)                  { setPlayerState("error"); return; }
       if (refreshingRef.current)   { return; } // already refreshing

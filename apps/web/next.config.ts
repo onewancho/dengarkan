@@ -9,6 +9,24 @@ const nextConfig: NextConfig = {
     "localhost:3000",
   ],
 
+  // Force HTTPS for production domain when accessed over plain HTTP
+  async redirects() {
+    return [
+      {
+        source: "/:path*",
+        has: [
+          {
+            type: "header",
+            key: "x-forwarded-proto",
+            value: "http",
+          },
+        ],
+        destination: "https://dengarkan.my.id/:path*",
+        permanent: true,
+      },
+    ];
+  },
+
   // Proxy API requests to the Fastify backend
   async rewrites() {
     return [
@@ -21,3 +39,4 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
+

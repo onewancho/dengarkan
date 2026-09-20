@@ -60,14 +60,17 @@ function isSecureContext(): boolean {
 }
 
 function cookieOptions() {
+  const secure = isSecureContext();
   return {
     httpOnly: true,
-    secure: isSecureContext(),
+    secure,
     sameSite: 'lax' as const,
     path: '/',
     maxAge: SESSION_MAX_AGE,
+    expires: new Date(Date.now() + SESSION_MAX_AGE * 1000),
   };
 }
+
 
 // ── Constant-time dummy hash (prevents user-enumeration via timing) ───────────
 const DUMMY_HASH =

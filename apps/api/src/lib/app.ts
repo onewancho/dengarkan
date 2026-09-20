@@ -37,7 +37,10 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
             : undefined,
         },
     // Trust proxy headers (needed when behind Nginx / Cloudflare)
-    trustProxy: !isDev,
+    trustProxy:
+      !isDev ||
+      process.env.SECURE_COOKIES === 'true' ||
+      Boolean(process.env.TRUST_PROXY),
   });
 
   // ── Security Headers (fastify-helmet) ──────────────────────────────────────
@@ -75,18 +78,27 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   // ── CORS ───────────────────────────────────────────────────────────────────
   await app.register(fastifyCors, {
-    origin: isDev
-      ? (origin, cb) => {
-          if (!origin) {
-            cb(null, true);
-            return;
-          }
-          const isAllowed = /^http:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(
-            origin
-          );
-          cb(null, isAllowed);
-        }
-      : ['https://dengarkan.my.id'],
+    origin: (origin, cb) => {
+      if (!origin) {
+        cb(null, true);
+        return;
+      }
+      if (
+        origin === 'https://dengarkan.my.id' ||
+        origin === 'http://dengarkan.my.id'
+      ) {
+        cb(null, true);
+        return;
+      }
+      if (isDev) {
+        const isAllowed = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(
+          origin
+        );
+        cb(null, isAllowed);
+        return;
+      }
+      cb(null, false);
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Cookie'],

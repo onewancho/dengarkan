@@ -69,11 +69,15 @@ function fmt(secs: number): string {
 
 // ── shuffleArray ─────────────────────────────────────────────────────────────
 
-function shuffleArray<T>(arr: T[]): T[] {
+function shuffleArray<T>(arr: T[], ensureDifferentFirst = false): T[] {
   const out = [...arr];
   for (let i = out.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [out[i], out[j]] = [out[j], out[i]];
+  }
+  if (ensureDifferentFirst && out.length > 1 && out[0] === arr[0]) {
+    const swapIdx = 1 + Math.floor(Math.random() * (out.length - 1));
+    [out[0], out[swapIdx]] = [out[swapIdx], out[0]];
   }
   return out;
 }
@@ -130,7 +134,8 @@ type QueueAction =
   | { type: "ADVANCE_NEXT"; current: PlayableTrack | null; shuffleOn: boolean; chosenIndex?: number }
   | { type: "ADVANCE_PREV"; current: PlayableTrack | null }
   | { type: "PUSH_HISTORY"; track: PlayableTrack }
-  | { type: "SHUFFLE_TOGGLE" };
+  | { type: "SHUFFLE_TOGGLE" }
+  | { type: "SET_SHUFFLE"; shuffleOn: boolean };
 
 interface QueueState {
   queue:     PlayableTrack[];
@@ -176,6 +181,8 @@ function queueReducer(state: QueueState, action: QueueAction): QueueState {
     }
     case "SHUFFLE_TOGGLE":
       return { ...state, shuffleOn: !state.shuffleOn };
+    case "SET_SHUFFLE":
+      return { ...state, shuffleOn: action.shuffleOn };
     default:
       return state;
   }
@@ -243,6 +250,16 @@ describe("Audio Engine — shuffleArray()", () => {
 
   it("handles single element", () => {
     assert.deepEqual(shuffleArray([42]), [42]);
+  });
+
+  it("ensureDifferentFirst guarantees shuffled[0] !== original[0] for length > 1", () => {
+    const original = ["track1", "track2", "track3", "track4"];
+    for (let testRun = 0; testRun < 50; testRun++) {
+      const shuffled = shuffleArray(original, true);
+      assert.notEqual(shuffled[0], original[0], `Run ${testRun}: first item must not equal original first item`);
+      assert.equal(shuffled.length, original.length);
+      assert.deepEqual([...shuffled].sort(), [...original].sort());
+    }
   });
 });
 
@@ -452,6 +469,13 @@ describe("Audio Engine — queueReducer: SHUFFLE_TOGGLE", () => {
   it("toggles shuffleOn from true to false", () => {
     let s = queueReducer(initialQueueState(), { type: "SHUFFLE_TOGGLE" });
     s = queueReducer(s, { type: "SHUFFLE_TOGGLE" });
+    assert.equal(s.shuffleOn, false);
+  });
+
+  it("SET_SHUFFLE sets shuffleOn explicitly", () => {
+    let s = queueReducer(initialQueueState(), { type: "SET_SHUFFLE", shuffleOn: true });
+    assert.equal(s.shuffleOn, true);
+    s = queueReducer(s, { type: "SET_SHUFFLE", shuffleOn: false });
     assert.equal(s.shuffleOn, false);
   });
 });

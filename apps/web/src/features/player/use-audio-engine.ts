@@ -215,6 +215,22 @@ const REPEAT_KEY      = "dengarkan:repeat";
 const HISTORY_MAX     = 500;
 const DEFAULT_VOLUME  = 1.0;
 
+// ── Shuffle Helper ─────────────────────────────────────────────────────────────
+
+export function shuffleArray<T>(items: T[], ensureDifferentFirst = false): T[] {
+  if (items.length <= 1) return [...items];
+  const shuffled = [...items];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  if (ensureDifferentFirst && shuffled.length > 1 && shuffled[0] === items[0]) {
+    const swapIdx = 1 + Math.floor(Math.random() * (shuffled.length - 1));
+    [shuffled[0], shuffled[swapIdx]] = [shuffled[swapIdx], shuffled[0]];
+  }
+  return shuffled;
+}
+
 // ── State reducer (for complex state transitions) ─────────────────────────────
 // We use useReducer for the queue/shuffle/history to avoid stale closure bugs.
 
@@ -226,6 +242,7 @@ type QueueAction =
   | { type: "ADVANCE_PREV"; current: PlayableTrack | null }
   | { type: "PUSH_HISTORY"; track: PlayableTrack }
   | { type: "SHUFFLE_TOGGLE" }
+  | { type: "SET_SHUFFLE"; shuffleOn: boolean }
   // Load a playlist: sets queue to remaining tracks after startIndex.
   // The track at startIndex becomes currentTrack (handled by caller).
   | { type: "LOAD_PLAYLIST"; tracks: PlayableTrack[]; startIndex: number }
@@ -297,14 +314,13 @@ function queueReducer(state: QueueState, action: QueueAction): QueueState {
     case "SHUFFLE_TOGGLE": {
       const nextShuffle = !state.shuffleOn;
       if (nextShuffle && state.queue.length > 1) {
-        const shuffled = [...state.queue];
-        for (let i = shuffled.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-        }
-        return { ...state, shuffleOn: true, queue: shuffled };
+        return { ...state, shuffleOn: true, queue: shuffleArray(state.queue, true) };
       }
       return { ...state, shuffleOn: nextShuffle };
+    }
+
+    case "SET_SHUFFLE": {
+      return { ...state, shuffleOn: action.shuffleOn };
     }
 
     case "LOAD_PLAYLIST": {
@@ -317,11 +333,7 @@ function queueReducer(state: QueueState, action: QueueAction): QueueState {
       // tracks after startIndex become the queue
       let queue = tracks.slice(startIndex + 1);
       if (state.shuffleOn && queue.length > 1) {
-        queue = [...queue];
-        for (let i = queue.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [queue[i], queue[j]] = [queue[j], queue[i]];
-        }
+        queue = shuffleArray(queue, true);
       }
       return { ...state, queue, history, nextTrack: null };
     }
@@ -479,14 +491,40 @@ export function useAudioEngine(): AudioEngine {
     const idx = Math.max(0, Math.min(startIndex, tracks.length - 1));
     const activeTrack = tracks[idx];
     const rep = repeatModeRef.current;
-    let streamTracks = tracks.slice(idx);
+    const isShuffle = shuffleOnRef.current;
 
-    if (rep === "one") {
-      streamTracks = [activeTrack];
-    } else if (rep === "all") {
-      const { history } = queueStateRef.current;
-      const historyReversed = history.slice().reverse().filter((t) => t.videoId !== activeTrack.videoId);
-      streamTracks = [activeTrack, ...streamTracks.slice(1), ...historyReversed];
+    let streamTracks: PlayableTrack[];
+
+    if (seekSeconds > 0 && continuousTracksRef.current.length > 0 && continuousTracksRef.current[0].videoId === activeTrack.videoId) {
+      // Seeking within currently playing continuous track: keep existing stream sequence
+      streamTracks = continuousTracksRef.current;
+    } else {
+      let remaining = tracks.slice(idx + 1);
+      if (isShuffle && remaining.length > 1) {
+        remaining = shuffleArray(remaining, true);
+      }
+
+      if (rep === "one") {
+        streamTracks = [activeTrack];
+      } else if (rep === "all") {
+        const { history } = queueStateRef.current;
+        let extra = history.slice().reverse().filter((t) => t.videoId !== activeTrack.videoId);
+        if (isShuffle && extra.length > 1) {
+          extra = shuffleArray(extra);
+        }
+        streamTracks = [activeTrack, ...remaining, ...extra];
+      } else {
+        streamTracks = [activeTrack, ...remaining];
+      }
+
+      // Sync React queueState if shuffle randomized the remaining order
+      if (isShuffle && remaining.length > 0) {
+        dispatchQueue({
+          type: "SET_ALL_TRACKS",
+          history: queueStateRef.current.history,
+          queue: remaining,
+        });
+      }
     }
 
     const sid = `cs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -540,11 +578,7 @@ export function useAudioEngine(): AudioEngine {
     if (isIosOrMobileWebKit()) {
       let q = queueStateRef.current.queue;
       if (shuffleOnRef.current && q.length > 1) {
-        q = [...q];
-        for (let i = q.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [q[i], q[j]] = [q[j], q[i]];
-        }
+        q = shuffleArray(q, true);
       }
       await startContinuousStream([track, ...q], 0);
       return;
@@ -634,11 +668,7 @@ export function useAudioEngine(): AudioEngine {
     if (isIosOrMobileWebKit()) {
       let remainingQueue = resetQueue ? [] : queueStateRef.current.queue;
       if (shuffleOnRef.current && remainingQueue.length > 1) {
-        remainingQueue = [...remainingQueue];
-        for (let i = remainingQueue.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [remainingQueue[i], remainingQueue[j]] = [remainingQueue[j], remainingQueue[i]];
-        }
+        remainingQueue = shuffleArray(remainingQueue, true);
       }
       await startContinuousStream([track, ...remainingQueue], 0);
     } else {
@@ -659,11 +689,7 @@ export function useAudioEngine(): AudioEngine {
 
     let remaining = tracks.slice(idx + 1);
     if (shuffleOnRef.current && remaining.length > 1) {
-      remaining = [...remaining];
-      for (let i = remaining.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [remaining[i], remaining[j]] = [remaining[j], remaining[i]];
-      }
+      remaining = shuffleArray(remaining, true);
     }
 
     if (isIosOrMobileWebKit()) {
@@ -717,8 +743,14 @@ export function useAudioEngine(): AudioEngine {
     if (isFinite(target)) {
       if (continuousActiveRef.current) {
         const cur = currentTrackRef.current;
-        const remainingQueue = queueStateRef.current.queue;
-        const tracksToStream = cur ? [cur, ...remainingQueue] : continuousTracksRef.current;
+        let tracksToStream: PlayableTrack[];
+        if (continuousTracksRef.current.length > 0 && continuousTracksRef.current[0].videoId === cur?.videoId) {
+          tracksToStream = continuousTracksRef.current;
+        } else {
+          const remainingQueue = queueStateRef.current.queue;
+          tracksToStream = cur ? [cur, ...remainingQueue] : continuousTracksRef.current;
+        }
+
         if (tracksToStream.length > 0) {
           // Reconnect continuous stream from target seek offset with instant low-latency FFmpeg -ss
           void startContinuousStream(tracksToStream, 0, target);
@@ -894,28 +926,55 @@ export function useAudioEngine(): AudioEngine {
 
   const toggleShuffle = useCallback(() => {
     const nextShuffle = !shuffleOnRef.current;
-    if (nextShuffle && queueStateRef.current.queue.length > 1) {
-      const shuffled = [...queueStateRef.current.queue];
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-      }
+    shuffleOnRef.current = nextShuffle;
+
+    const { queue, history } = queueStateRef.current;
+    const cur = currentTrackRef.current;
+
+    if (nextShuffle) {
+      const shuffledQueue = queue.length > 1 ? shuffleArray(queue, true) : [...queue];
       dispatchQueue({
         type: "SET_ALL_TRACKS",
-        history: queueStateRef.current.history,
-        queue: shuffled,
+        history,
+        queue: shuffledQueue,
       });
-      if (continuousActiveRef.current && currentTrackRef.current) {
-        continuousTracksRef.current = [currentTrackRef.current, ...shuffled];
+      dispatchQueue({ type: "SET_SHUFFLE", shuffleOn: true });
+
+      if (continuousActiveRef.current && cur) {
+        let streamTracks: PlayableTrack[] = [cur, ...shuffledQueue];
+        if (repeatModeRef.current === "all" && history.length > 0) {
+          const histShuffled = shuffleArray(history.filter((t) => t.videoId !== cur.videoId));
+          streamTracks = [cur, ...shuffledQueue, ...histShuffled];
+        } else if (repeatModeRef.current === "one") {
+          streamTracks = [cur];
+        }
+        continuousTracksRef.current = streamTracks;
         if (continuousSessionIdRef.current) {
           void apiClient.audio.updateContinuousQueue(
             continuousSessionIdRef.current,
-            continuousTracksRef.current
+            streamTracks
+          ).catch(() => {});
+        }
+      }
+    } else {
+      dispatchQueue({ type: "SET_SHUFFLE", shuffleOn: false });
+      if (continuousActiveRef.current && cur) {
+        let streamTracks: PlayableTrack[] = [cur, ...queue];
+        if (repeatModeRef.current === "all" && history.length > 0) {
+          const histReversed = history.slice().reverse().filter((t) => t.videoId !== cur.videoId);
+          streamTracks = [cur, ...queue, ...histReversed];
+        } else if (repeatModeRef.current === "one") {
+          streamTracks = [cur];
+        }
+        continuousTracksRef.current = streamTracks;
+        if (continuousSessionIdRef.current) {
+          void apiClient.audio.updateContinuousQueue(
+            continuousSessionIdRef.current,
+            streamTracks
           ).catch(() => {});
         }
       }
     }
-    dispatchQueue({ type: "SHUFFLE_TOGGLE" });
   }, []);
 
   const setRepeatMode = useCallback((m: RepeatMode) => {
@@ -931,8 +990,11 @@ export function useAudioEngine(): AudioEngine {
         if (m === "one") {
           tracks = [cur];
         } else if (m === "all") {
-          const historyReversed = history.slice().reverse().filter((t) => t.videoId !== cur.videoId);
-          tracks = [cur, ...queue, ...historyReversed];
+          let historyPart = history.slice().reverse().filter((t) => t.videoId !== cur.videoId);
+          if (shuffleOnRef.current && historyPart.length > 1) {
+            historyPart = shuffleArray(historyPart);
+          }
+          tracks = [cur, ...queue, ...historyPart];
         } else {
           tracks = [cur, ...queue];
         }
@@ -977,15 +1039,30 @@ export function useAudioEngine(): AudioEngine {
 
       if (continuousActiveRef.current) {
         if (queue.length > 0) {
-          dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
-          await startContinuousStream(queue, 0);
+          let chosenIdx = 0;
+          if (shuffleOn && queue.length > 1) {
+            chosenIdx = Math.floor(Math.random() * queue.length);
+          }
+          const nextTrack = queue[chosenIdx];
+          const remaining = queue.filter((_, i) => i !== chosenIdx);
+          dispatchQueue({
+            type: "ADVANCE_NEXT",
+            current,
+            shuffleOn,
+            repeatMode: repeat,
+            chosenIndex: chosenIdx,
+          });
+          await startContinuousStream([nextTrack, ...remaining], 0);
           return;
         }
         if (repeat === "all") {
-          const full = current
+          let full = current
             ? [...[...history].reverse(), current]
             : [...history].reverse();
           if (full.length > 0) {
+            if (shuffleOn && full.length > 1) {
+              full = shuffleArray(full, true);
+            }
             dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat, chosenIndex: 0 });
             await startContinuousStream(full, 0);
             return;
@@ -1080,7 +1157,11 @@ export function useAudioEngine(): AudioEngine {
 
     const target = all[index];
     const newHistory = all.slice(0, index).reverse().slice(0, HISTORY_MAX);
-    const newQueue = all.slice(index + 1);
+    let newQueue = all.slice(index + 1);
+
+    if (shuffleOnRef.current && newQueue.length > 1) {
+      newQueue = shuffleArray(newQueue, true);
+    }
 
     dispatchQueue({
       type: "SET_ALL_TRACKS",

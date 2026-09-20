@@ -48,7 +48,7 @@ import {
 } from "react";
 import type { PlayerState, AudioStream, SearchResult, QueueTrack } from "@dengarkan/shared";
 import { apiClient } from "@/services/api-client";
-import { useMediaSession, buildArtwork } from "./use-media-session";
+import { useMediaSession, buildArtwork, safeSetPositionState } from "./use-media-session";
 import { parseTrackMeta } from "@/lib/track-meta";
 
 // ── Client Stream Cache ───────────────────────────────────────────────────────
@@ -481,9 +481,23 @@ export function useAudioEngine(): AudioEngine {
       }
     }
 
-    candidates.forEach((candidate) => {
-      if (candidate && !getCachedStream(candidate.videoId)) {
-        void fetchStreamWithCache(candidate.videoId).catch(() => {});
+    candidates.forEach((candidate, idx) => {
+      if (candidate) {
+        if (!getCachedStream(candidate.videoId)) {
+          void fetchStreamWithCache(candidate.videoId)
+            .then(() => {
+              if (idx === 0 && typeof window !== "undefined") {
+                fetch(getProxyStreamUrl(candidate.videoId), {
+                  headers: { Range: "bytes=0-1024" },
+                }).catch(() => {});
+              }
+            })
+            .catch(() => {});
+        } else if (idx === 0 && typeof window !== "undefined") {
+          fetch(getProxyStreamUrl(candidate.videoId), {
+            headers: { Range: "bytes=0-1024" },
+          }).catch(() => {});
+        }
       }
     });
   }, [currentTrack, queueState.queue, queueState.history, repeatMode, queueState.shuffleOn]);
@@ -534,15 +548,19 @@ export function useAudioEngine(): AudioEngine {
   const directLoadTrack = useCallback(async (track: PlayableTrack, overrideSequence?: PlayableTrack[], startOffsetSeconds?: number): Promise<void> => {
     currentTrackRef.current = track;
     setCurrentTrack(track);
-    setDuration(track.durationSeconds || 0);
+
+    const cachedStream = getCachedStream(track.videoId);
+    currentStreamRef.current = cachedStream || null;
+
+    const initialDuration = track.durationSeconds || cachedStream?.durationSeconds || 0;
+    setDuration(initialDuration);
 
     const audio = audioRef.current;
-    const cachedStream = getCachedStream(track.videoId);
 
     // Sync MediaSession immediately in this synchronous tick so iOS Lock Screen updates instantly
     if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
       try {
-        const meta = parseTrackMeta(track.title, track.channelName, track.durationSeconds);
+        const meta = parseTrackMeta(track.title, track.channelName, initialDuration);
         navigator.mediaSession.metadata = new MediaMetadata({
           title:   meta.title,
           artist:  meta.artist,
@@ -550,6 +568,9 @@ export function useAudioEngine(): AudioEngine {
           artwork: buildArtwork(track.thumbnailUrl),
         });
         navigator.mediaSession.playbackState = "playing";
+        if (initialDuration > 0 && audio) {
+          safeSetPositionState(audio, initialDuration, 0);
+        }
       } catch { /* ignore */ }
     }
 
@@ -561,18 +582,19 @@ export function useAudioEngine(): AudioEngine {
 
       if (!isSameSrc) {
         audio.src = targetSrc;
-        audio.load();
       }
 
       console.log(`[SONG CHANGED] Judul: ${track.title} | Artis: ${track.channelName || "Dengarkan"}`);
-      console.log(`[MEDIA EVENT] PLAY | Time: ${audio.currentTime.toFixed(1)}s / ${isNaN(audio.duration) ? "NaNs" : audio.duration.toFixed(1) + "s"} | Paused: false`);
+      console.log(`[MEDIA EVENT] PLAY | Time: ${audio.currentTime.toFixed(1)}s / ${initialDuration.toFixed(1)}s | Paused: false`);
 
-      try {
-        const initialSeek = typeof startOffsetSeconds === "number" && startOffsetSeconds > 0
-          ? startOffsetSeconds
-          : 0;
-        audio.currentTime = initialSeek;
-      } catch { /* ignore InvalidStateError in Safari */ }
+      // ONLY set currentTime if an explicit positive seek offset was requested.
+      // Setting currentTime = 0 on readyState === HAVE_NOTHING creates an unresolved
+      // pending seek in WebKit AVFoundation that stalls background audio output!
+      if (typeof startOffsetSeconds === "number" && startOffsetSeconds > 0) {
+        try {
+          audio.currentTime = startOffsetSeconds;
+        } catch { /* ignore InvalidStateError in Safari */ }
+      }
 
       setPlayerState("playing");
       try {
@@ -594,9 +616,12 @@ export function useAudioEngine(): AudioEngine {
     } else {
       void fetchStreamWithCache(track.videoId)
         .then((stream) => {
-          setCurrentStream(stream);
-          if (stream.durationSeconds && stream.durationSeconds > 0) {
-            setDuration(stream.durationSeconds);
+          if (currentTrackRef.current?.videoId === track.videoId) {
+            currentStreamRef.current = stream;
+            setCurrentStream(stream);
+            if (stream.durationSeconds && stream.durationSeconds > 0) {
+              setDuration(stream.durationSeconds);
+            }
           }
         })
         .catch((err) => {

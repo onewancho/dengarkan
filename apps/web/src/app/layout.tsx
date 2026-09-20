@@ -32,17 +32,6 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="id" className={`${inter.variable} bg-black text-white`}>
-      <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              if (typeof window !== 'undefined' && location.protocol === 'http:' && location.hostname !== 'localhost' && !/^(\\d{1,3}\\.){3}\\d{1,3}$/.test(location.hostname)) {
-                location.replace('https://' + location.host + location.pathname + location.search + location.hash);
-              }
-            `,
-          }}
-        />
-      </head>
       <body className="antialiased bg-black text-white min-h-dvh">
         <AuthProvider>
           <ToastProvider>

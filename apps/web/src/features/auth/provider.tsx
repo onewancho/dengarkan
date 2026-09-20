@@ -29,12 +29,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    // If running in browser on HTTP on a public domain, upgrade to HTTPS immediately
+    if (
+      typeof window !== "undefined" &&
+      window.location.protocol === "http:" &&
+      !window.location.hostname.includes("localhost") &&
+      !/^(\d{1,3}\.){3}\d{1,3}$/.test(window.location.hostname)
+    ) {
+      window.location.replace(
+        "https://" +
+          window.location.host +
+          window.location.pathname +
+          window.location.search +
+          window.location.hash
+      );
+      return;
+    }
+
     apiClient.auth
       .session()
       .then((res) => setUser(res.user))
       .catch(() => setUser(null))
       .finally(() => setIsLoading(false));
   }, []);
+
 
   const login = useCallback(async (username: string, password: string) => {
     const res = await apiClient.auth.login(username, password);

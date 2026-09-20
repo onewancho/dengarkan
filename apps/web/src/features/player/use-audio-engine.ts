@@ -515,7 +515,7 @@ export function useAudioEngine(): AudioEngine {
 
   // Synchronous direct track load: sets audio.src and initiates play in the exact same tick
   // to satisfy mobile browsers (Safari iOS lock screen background playback)
-  const directLoadTrack = useCallback((track: PlayableTrack, overrideSequence?: PlayableTrack[], startOffsetSeconds?: number) => {
+  const directLoadTrack = useCallback(async (track: PlayableTrack, overrideSequence?: PlayableTrack[], startOffsetSeconds?: number): Promise<void> => {
     currentTrackRef.current = track;
     setCurrentTrack(track);
     setDuration(track.durationSeconds || 0);
@@ -559,9 +559,14 @@ export function useAudioEngine(): AudioEngine {
       } catch { /* ignore InvalidStateError in Safari */ }
 
       setPlayerState("playing");
-      audio.play().catch((e) => {
+      try {
+        const playPromise = audio.play();
+        if (playPromise) {
+          await playPromise;
+        }
+      } catch (e) {
         console.warn("Audio play failed on direct load:", e);
-      });
+      }
     }
 
     if (cachedStream) {
@@ -584,19 +589,19 @@ export function useAudioEngine(): AudioEngine {
   }, [fetchStreamWithCache, getCachedStream]);
 
   const loadTrack = useCallback(async (track: PlayableTrack) => {
-    directLoadTrack(track);
+    await directLoadTrack(track);
   }, [directLoadTrack]);
 
   // playTrack = loadTrack + optionally reset queue
   const playTrack = useCallback(async (track: PlayableTrack, resetQueue = false) => {
     if (resetQueue) {
       dispatchQueue({ type: "CLEAR" });
-      directLoadTrack(track, [track]);
+      await directLoadTrack(track, [track]);
     } else {
       if (currentTrackRef.current) {
         dispatchQueue({ type: "PUSH_HISTORY", track: currentTrackRef.current });
       }
-      directLoadTrack(track);
+      await directLoadTrack(track);
     }
   }, [directLoadTrack]);
 
@@ -610,24 +615,39 @@ export function useAudioEngine(): AudioEngine {
     const current = tracks[idx];
     dispatchQueue({ type: "LOAD_PLAYLIST", tracks, startIndex: idx });
 
-    directLoadTrack(current);
+    await directLoadTrack(current);
   }, [directLoadTrack]);
 
   // ── Controls ──────────────────────────────────────────────────────────────
 
-  const play = useCallback(() => {
-    audioRef.current?.play().catch(console.error);
+  const play = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    try {
+      const playPromise = audio.play();
+      if (playPromise) await playPromise;
+    } catch (err) {
+      console.error(err);
+    }
   }, []);
 
   const pause = useCallback(() => {
     audioRef.current?.pause();
   }, []);
 
-  const toggle = useCallback(() => {
+  const toggle = useCallback(async () => {
     const audio = audioRef.current;
     if (!audio || !currentTrackRef.current) return;
-    if (audio.paused) audio.play().catch(console.error);
-    else              audio.pause();
+    if (audio.paused) {
+      try {
+        const playPromise = audio.play();
+        if (playPromise) await playPromise;
+      } catch (err) {
+        console.error(err);
+      }
+    } else {
+      audio.pause();
+    }
   }, []);
 
   const getCurrentTime = useCallback(() => {
@@ -636,7 +656,7 @@ export function useAudioEngine(): AudioEngine {
     return audio.currentTime;
   }, []);
 
-  const seek = useCallback((seconds: number) => {
+  const seek = useCallback(async (seconds: number) => {
     const audio = audioRef.current;
     if (!audio || !isFinite(seconds)) return;
 
@@ -654,7 +674,8 @@ export function useAudioEngine(): AudioEngine {
       try {
         audio.currentTime = target;
         if (playerStateRef.current === "playing" && audio.paused) {
-          audio.play().catch((err) => console.warn("Failed to resume after seek:", err));
+          const playPromise = audio.play();
+          if (playPromise) await playPromise;
         }
       } catch (err) {
         console.warn("Failed to seek audio:", err);
@@ -832,7 +853,8 @@ export function useAudioEngine(): AudioEngine {
         if (audio) {
           audio.currentTime = 0;
           try {
-            await audio.play();
+            const playPromise = audio.play();
+            if (playPromise) await playPromise;
           } catch (e) {
             console.error("Failed to replay track in repeat=one", e);
           }
@@ -859,7 +881,7 @@ export function useAudioEngine(): AudioEngine {
           newQueue,
         });
 
-        directLoadTrack(nextTrack);
+        await directLoadTrack(nextTrack);
         return;
       }
 
@@ -891,7 +913,8 @@ export function useAudioEngine(): AudioEngine {
             if (audio) {
               audio.currentTime = 0;
               try {
-                await audio.play();
+                const playPromise = audio.play();
+                if (playPromise) await playPromise;
               } catch (e) {
                 console.error("Failed to replay track in repeat=all", e);
               }
@@ -899,7 +922,7 @@ export function useAudioEngine(): AudioEngine {
             return;
           }
 
-          directLoadTrack(nextTrack);
+          await directLoadTrack(nextTrack);
           return;
         }
       }
@@ -925,7 +948,8 @@ export function useAudioEngine(): AudioEngine {
       if (audio) {
         audio.currentTime = 0;
         try {
-          await audio.play();
+          const playPromise = audio.play();
+          if (playPromise) await playPromise;
         } catch (e) {
           console.error("Failed to restart track", e);
         }
@@ -940,7 +964,7 @@ export function useAudioEngine(): AudioEngine {
     const current = currentTrackRef.current;
 
     dispatchQueue({ type: "ADVANCE_PREV", current });
-    directLoadTrack(prevTrack);
+    await directLoadTrack(prevTrack);
   }, [directLoadTrack, getCurrentTime]);
 
   const playTrackAtIndex = useCallback(async (index: number) => {
@@ -951,7 +975,12 @@ export function useAudioEngine(): AudioEngine {
     if (index === curIdx) {
       const audio = audioRef.current;
       if (audio && audio.paused) {
-        audio.play().catch(console.error);
+        try {
+          const playPromise = audio.play();
+          if (playPromise) await playPromise;
+        } catch (err) {
+          console.error(err);
+        }
       }
       return;
     }
@@ -970,7 +999,7 @@ export function useAudioEngine(): AudioEngine {
       queue: newQueue,
     });
 
-    directLoadTrack(target);
+    await directLoadTrack(target);
   }, [directLoadTrack]);
 
   const playFromQueue = playTrackAtIndex;

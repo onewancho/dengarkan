@@ -5,6 +5,7 @@ import {
   buildHlsPlaylistUrl,
   getTrackStartOffset,
   mapHlsTimeToTrack,
+  buildPlaybackSequence,
 } from './hls-player.ts';
 import type { PlayableTrack } from './use-audio-engine.ts';
 
@@ -143,5 +144,52 @@ describe('HLS Player Helpers — mapHlsTimeToTrack', () => {
 
   it('returns null for empty tracks array', () => {
     assert.equal(mapHlsTimeToTrack([], 100), null);
+  });
+});
+
+describe('HLS Player Helpers — buildPlaybackSequence', () => {
+  const t1 = createMockTrack('vid1', 200, 'Track 1');
+  const t2 = createMockTrack('vid2', 180, 'Track 2');
+  const t3 = createMockTrack('vid3', 210, 'Track 3');
+
+  it('repeat=one returns only current track', () => {
+    const seq = buildPlaybackSequence(t1, [t2, t3], [], 'one', false);
+    assert.equal(seq.length, 1);
+    assert.equal(seq[0].videoId, 'vid1');
+  });
+
+  it('repeat=none returns linear queue continuation', () => {
+    const seq = buildPlaybackSequence(t1, [t2, t3], [], 'none', false);
+    assert.equal(seq.length, 3);
+    assert.equal(seq[0].videoId, 'vid1');
+    assert.equal(seq[1].videoId, 'vid2');
+    assert.equal(seq[2].videoId, 'vid3');
+  });
+
+  it('repeat=all creates extended loop of all tracks including history', () => {
+    const seq = buildPlaybackSequence(t2, [t3], [t1], 'all', false);
+    assert.ok(seq.length >= 10);
+    // Sequence starts with current (t2), followed by queue (t3), then history (t1)
+    assert.equal(seq[0].videoId, 'vid2');
+    assert.equal(seq[1].videoId, 'vid3');
+    assert.equal(seq[2].videoId, 'vid1');
+    // Loops back to t2
+    assert.equal(seq[3].videoId, 'vid2');
+  });
+
+  it('shuffleOn randomizes upcoming tracks while keeping current track first', () => {
+    const queue = [
+      createMockTrack('q1', 100),
+      createMockTrack('q2', 100),
+      createMockTrack('q3', 100),
+      createMockTrack('q4', 100),
+      createMockTrack('q5', 100),
+    ];
+    const seq = buildPlaybackSequence(t1, queue, [], 'none', true);
+    assert.equal(seq.length, 6);
+    assert.equal(seq[0].videoId, 'vid1');
+    // All original tracks are present in sequence
+    const ids = new Set(seq.map(t => t.videoId));
+    assert.equal(ids.size, 6);
   });
 });

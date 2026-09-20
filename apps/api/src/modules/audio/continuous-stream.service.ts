@@ -184,11 +184,13 @@ export async function streamContinuousQueue(
     activeSessions.delete(sid);
   };
 
-  rawRes.on('close', cleanup);
+  rawRes.on('close', () => {
+    if (!rawRes.writableEnded) {
+      cleanup();
+    }
+  });
   rawRes.on('finish', cleanup);
   rawRes.on('error', cleanup);
-  request.raw.on('close', cleanup);
-  request.raw.on('aborted', cleanup);
 
   let headersSent = false;
   let isFirstTrack = true;

@@ -81,6 +81,8 @@ export interface UseMediaSessionOptions {
   onPause:        () => void;
   onNext:         () => void;
   onPrevious:     () => void;
+  onSeek?:        (seconds: number) => void;
+  getCurrentTime?:() => number;
 }
 
 // ── YouTube artwork size set ───────────────────────────────────────────────────
@@ -100,56 +102,63 @@ export function buildArtwork(thumbnailUrl: string): MediaImage[] {
       { src: `${base}/maxresdefault.jpg`, sizes: "1280x720", type: "image/jpeg" },
     ];
   }
-  // Fallback: use the URL as-is with a reasonable size hint
-  return [{ src: thumbnailUrl, sizes: "480x360", type: "image/jpeg" }];
+
+  // Non-YouTube URL: single fallback entry
+  return [
+    { src: thumbnailUrl, sizes: "512x512", type: "image/jpeg" },
+  ];
 }
 
-export function toPlaybackState(
-  state: PlayerState,
-  hasTrack: boolean = true
-): MediaSessionPlaybackState {
-  if (!hasTrack) return "none";
-  switch (state) {
-    case "playing":
-    case "buffering":
-    case "loading":
-    case "refreshing":
-      return "playing";
-    case "paused":
-    case "error":
-      return "paused";
-    default:
-      return "none"; // idle
-  }
-}
-
-// ── Safe wrappers ─────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function safeSetHandler(
   action: MediaSessionAction,
-  handler: MediaSessionActionHandler | null
+  handler: MediaSessionActionHandler | null,
 ): void {
+  if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
   try {
     navigator.mediaSession.setActionHandler(action, handler);
   } catch {
-    // Some actions (e.g. seekto) are not supported on all platforms
+    // Action not supported by this browser — safely ignored
   }
 }
 
-function safeSetPositionState(audio: HTMLAudioElement): void {
+export function toPlaybackState(state: PlayerState, hasTrack: boolean): MediaSessionPlaybackState {
+  if (!hasTrack || state === "idle") return "none";
+  if (state === "playing" || state === "buffering") return "playing";
+  // loading / refreshing preserve "playing" so iOS doesn't suspend during track transitions
+  if (state === "loading" || state === "refreshing") return "playing";
+  return "paused";
+}
+
+export function safeSetPositionState(
+  audio: HTMLAudioElement | null,
+  overrideDuration?: number,
+  overridePosition?: number
+): void {
+  if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+  if (!audio) return;
+
+  const dur = (typeof overrideDuration === "number" && overrideDuration > 0)
+    ? overrideDuration
+    : audio.duration;
+  const pos = (typeof overridePosition === "number" && overridePosition >= 0)
+    ? overridePosition
+    : audio.currentTime;
+
   // Validate all values before calling — invalid values throw on iOS
   if (
-    !isFinite(audio.duration) ||
-    audio.duration <= 0 ||
-    !isFinite(audio.currentTime) ||
-    audio.currentTime < 0
+    !isFinite(dur) ||
+    dur <= 0 ||
+    !isFinite(pos) ||
+    pos < 0
   ) return;
 
-  const position = Math.min(audio.currentTime, audio.duration);
+  const position = Math.min(pos, dur);
   try {
     navigator.mediaSession.setPositionState?.({
-      duration:     audio.duration,
-      playbackRate: audio.playbackRate,
+      duration:     dur,
+      playbackRate: audio.playbackRate || 1.0,
       position,
     });
   } catch {
@@ -163,10 +172,13 @@ export function useMediaSession({
   audioRef,
   currentTrack,
   playerState,
+  duration,
   onPlay,
   onPause,
   onNext,
   onPrevious,
+  onSeek,
+  getCurrentTime,
 }: UseMediaSessionOptions): void {
   const supported = typeof navigator !== "undefined" && "mediaSession" in navigator;
 
@@ -229,22 +241,39 @@ export function useMediaSession({
 
     safeSetHandler("seekbackward", (details) => {
       const offset = details?.seekOffset ?? SEEK_STEP;
-      audio.currentTime = Math.max(0, audio.currentTime - offset);
-      safeSetPositionState(audio);
+      const cur = getCurrentTime ? getCurrentTime() : audio.currentTime;
+      const target = Math.max(0, cur - offset);
+      if (onSeek) {
+        onSeek(target);
+      } else {
+        audio.currentTime = target;
+      }
+      safeSetPositionState(audio, duration, target);
     });
 
     safeSetHandler("seekforward", (details) => {
       const offset = details?.seekOffset ?? SEEK_STEP;
-      const max = isFinite(audio.duration) ? audio.duration : Infinity;
-      audio.currentTime = Math.min(max, audio.currentTime + offset);
-      safeSetPositionState(audio);
+      const cur = getCurrentTime ? getCurrentTime() : audio.currentTime;
+      const dur = duration > 0 ? duration : (isFinite(audio.duration) ? audio.duration : Infinity);
+      const target = Math.min(dur, cur + offset);
+      if (onSeek) {
+        onSeek(target);
+      } else {
+        audio.currentTime = target;
+      }
+      safeSetPositionState(audio, duration, target);
     });
 
     safeSetHandler("seekto", (details) => {
       if (details?.seekTime == null || !isFinite(details.seekTime)) return;
-      const max = isFinite(audio.duration) ? audio.duration : Infinity;
-      audio.currentTime = Math.max(0, Math.min(details.seekTime, max));
-      safeSetPositionState(audio);
+      const dur = duration > 0 ? duration : (isFinite(audio.duration) ? audio.duration : Infinity);
+      const target = Math.max(0, Math.min(details.seekTime, dur));
+      if (onSeek) {
+        onSeek(target);
+      } else {
+        audio.currentTime = target;
+      }
+      safeSetPositionState(audio, duration, target);
     });
 
     // Cleanup: null out all handlers when track changes or component unmounts
@@ -252,10 +281,10 @@ export function useMediaSession({
       (["play","pause","nexttrack","previoustrack","seekbackward","seekforward","seekto"] as const)
         .forEach(a => safeSetHandler(a, null));
     };
-  // We intentionally include onPlay/onPause/onNext/onPrevious as deps.
+  // We intentionally include onPlay/onPause/onNext/onPrevious/onSeek as deps.
   // These are useCallback-wrapped in the engine so they're stable.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supported, currentTrack]);
+  }, [supported, currentTrack, duration, onSeek, getCurrentTime]);
 
   // ── Position state: event-driven, throttled ────────────────────────────────
   // Called on: play, pause, seeking, timeupdate (throttled), durationchange.
@@ -271,13 +300,15 @@ export function useMediaSession({
       // Throttle to max once per second (timeupdate fires ~4x/s)
       if (now - lastPositionUpdate.current < 900) return;
       lastPositionUpdate.current = now;
-      safeSetPositionState(audio);
+      const pos = getCurrentTime ? getCurrentTime() : audio.currentTime;
+      safeSetPositionState(audio, duration, pos);
     };
 
     const updatePositionImmediate = () => {
       // For seek/play/pause events — update immediately (no throttle)
       lastPositionUpdate.current = Date.now();
-      safeSetPositionState(audio);
+      const pos = getCurrentTime ? getCurrentTime() : audio.currentTime;
+      safeSetPositionState(audio, duration, pos);
     };
 
     audio.addEventListener("timeupdate",     updatePosition);

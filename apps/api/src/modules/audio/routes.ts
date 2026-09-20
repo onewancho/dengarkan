@@ -162,8 +162,11 @@ export const audioRoutes: FastifyPluginAsync = async (app) => {
         ...(contentRange ? { 'Content-Range': contentRange } : {}),
       });
 
-      request.raw.on('close', () => reader.cancel().catch(() => {}));
-      request.raw.on('aborted', () => reader.cancel().catch(() => {}));
+      rawReply.on('close', () => {
+        if (!rawReply.writableEnded) {
+          reader.cancel().catch(() => {});
+        }
+      });
 
       try {
         while (true) {

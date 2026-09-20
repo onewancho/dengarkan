@@ -110,9 +110,12 @@ export async function streamHlsSegment(
   }
 
   let streamUrl: string;
+  let isAac = true;
   try {
     const stream = await audioResolver.resolve(videoId);
     streamUrl = stream.streamUrl;
+    const codec = (stream.codec || '').toLowerCase();
+    isAac = codec.includes('aac') || codec.includes('mp4a');
   } catch (err) {
     if (err instanceof ResolverError) {
       return reply.status(err.code === 'VIDEO_NOT_FOUND' ? 404 : 502).send({
@@ -124,6 +127,10 @@ export async function streamHlsSegment(
     throw err;
   }
 
+  const codecArgs = isAac
+    ? ['-c:a', 'copy']
+    : ['-c:a', 'aac', '-b:a', '160k'];
+
   const ffmpegArgs: string[] = [
     '-loglevel', 'error',
     '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -132,7 +139,7 @@ export async function streamHlsSegment(
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
     '-i', streamUrl,
-    '-c:a', 'copy',
+    ...codecArgs,
     '-id3v2_version', '3',
   ];
 
@@ -183,8 +190,22 @@ export async function streamHlsSegment(
     }
   };
 
-  request.raw.on('close', killProcess);
-  request.raw.on('aborted', killProcess);
+  reply.hijack();
+  const rawReply = reply.raw;
+  rawReply.writeHead(200, {
+    'Content-Type': 'audio/aac',
+    'Cache-Control': 'public, max-age=3600',
+    'Access-Control-Allow-Origin': '*',
+    'X-Content-Type-Options': 'nosniff',
+  });
+
+  stdout.pipe(rawReply);
+
+  rawReply.on('close', () => {
+    if (!rawReply.writableEnded) {
+      killProcess();
+    }
+  });
 
   stderr.on('data', (data: Buffer) => {
     request.log.warn({ ffmpegStderr: data.toString().trim() }, 'ffmpeg stderr output');
@@ -198,11 +219,4 @@ export async function streamHlsSegment(
   proc.on('close', (_code) => {
     killProcess();
   });
-
-  reply.header('Content-Type', 'audio/aac');
-  reply.header('Cache-Control', 'public, max-age=3600');
-  reply.header('Access-Control-Allow-Origin', '*');
-  reply.header('X-Content-Type-Options', 'nosniff');
-
-  return reply.send(stdout);
 }

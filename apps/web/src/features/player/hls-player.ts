@@ -30,6 +30,61 @@ export function supportsNativeHls(audio: HTMLAudioElement | null): boolean {
 }
 
 /**
+ * Self-contained Fisher-Yates shuffle for track arrays to prevent circular imports.
+ */
+function shuffleTracks(items: PlayableTrack[]): PlayableTrack[] {
+  if (items.length <= 1) return [...items];
+  const shuffled = [...items];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+/**
+ * Builds the exact linear sequence of tracks to be fed into the continuous HLS playlist.
+ * Handles queue continuation, repeat all looping (up to ~30 tracks of unbroken playback),
+ * and random shuffle order.
+ */
+export function buildPlaybackSequence(
+  current: PlayableTrack,
+  queue: PlayableTrack[],
+  history: PlayableTrack[],
+  repeatMode: 'none' | 'one' | 'all',
+  shuffleOn: boolean
+): PlayableTrack[] {
+  if (repeatMode === 'one') {
+    return [current];
+  }
+
+  let upcoming = [...queue];
+  if (shuffleOn && upcoming.length > 1) {
+    upcoming = shuffleTracks(upcoming);
+  }
+
+  if (repeatMode === 'all') {
+    let fullCycle = [current, ...upcoming];
+    if (history.length > 0) {
+      const histChronological = [...history].reverse();
+      fullCycle = [current, ...upcoming, ...histChronological];
+    }
+    if (shuffleOn && fullCycle.length > 2) {
+      const rest = shuffleTracks(fullCycle.slice(1));
+      fullCycle = [fullCycle[0], ...rest];
+    }
+    let loopList = [...fullCycle];
+    const targetCount = Math.max(10, Math.min(40, Math.ceil(30 / Math.max(1, fullCycle.length)) * fullCycle.length));
+    while (loopList.length < targetCount && loopList.length < 50) {
+      loopList = loopList.concat(fullCycle);
+    }
+    return loopList;
+  }
+
+  return [current, ...upcoming];
+}
+
+/**
  * Builds the dynamic HLS playlist URL for the Fastify backend.
  */
 export function buildHlsPlaylistUrl(

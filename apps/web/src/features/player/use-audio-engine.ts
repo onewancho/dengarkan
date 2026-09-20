@@ -50,6 +50,13 @@ import type { PlayerState, AudioStream, SearchResult, QueueTrack } from "@dengar
 import { apiClient } from "@/services/api-client";
 import { useMediaSession, buildArtwork } from "./use-media-session";
 import { parseTrackMeta } from "@/lib/track-meta";
+import {
+  supportsNativeHls,
+  buildHlsPlaylistUrl,
+  mapHlsTimeToTrack,
+  getTrackStartOffset,
+  buildPlaybackSequence,
+} from "./hls-player";
 
 // ── Client Stream Cache ───────────────────────────────────────────────────────
 // In-memory cache for resolved stream URLs so track transitions (especially
@@ -426,6 +433,9 @@ export function useAudioEngine(): AudioEngine {
   const isKeepAliveRef   = useRef(false);
   const lastAdvanceTimeRef = useRef(0);
   const advanceNextRef   = useRef<() => Promise<void>>(() => Promise.resolve());
+  const hlsTracksRef     = useRef<PlayableTrack[]>([]);
+  const isHlsModeRef     = useRef(false);
+  const pendingSeekRef   = useRef<number | null>(null);
 
 
   // Sync refs synchronously every render to prevent any stale closures
@@ -515,7 +525,7 @@ export function useAudioEngine(): AudioEngine {
 
   // Synchronous direct track load: sets audio.src and initiates play in the exact same tick
   // to satisfy mobile browsers (Safari iOS lock screen background playback)
-  const directLoadTrack = useCallback((track: PlayableTrack) => {
+  const directLoadTrack = useCallback((track: PlayableTrack, overrideSequence?: PlayableTrack[], startOffsetSeconds?: number) => {
     currentTrackRef.current = track;
     setCurrentTrack(track);
     setDuration(track.durationSeconds || 0);
@@ -540,13 +550,40 @@ export function useAudioEngine(): AudioEngine {
     if (audio) {
       isKeepAliveRef.current = false;
       audio.loop = false;
-      const targetSrc = getProxyStreamUrl(track.videoId);
-      if (audio.src !== targetSrc) {
+
+      const isNativeHls = supportsNativeHls(audio);
+      let targetSrc = getProxyStreamUrl(track.videoId);
+
+      const sequence = overrideSequence || buildPlaybackSequence(
+        track,
+        queueStateRef.current.queue,
+        queueStateRef.current.history,
+        repeatModeRef.current,
+        shuffleOnRef.current
+      );
+
+      if (isNativeHls && sequence.length > 1) {
+        isHlsModeRef.current = true;
+        hlsTracksRef.current = sequence;
+        targetSrc = buildHlsPlaylistUrl(sequence, 0);
+      } else {
+        isHlsModeRef.current = false;
+        hlsTracksRef.current = [];
+      }
+
+      const isSameSrc = typeof window !== "undefined" && audio.src === new URL(targetSrc, window.location.href).href;
+      if (!isSameSrc) {
         audio.src = targetSrc;
       }
       try {
-        if (audio.readyState > 0 && audio.currentTime !== 0) {
-          audio.currentTime = 0;
+        const initialSeek = typeof startOffsetSeconds === "number" && startOffsetSeconds > 0
+          ? startOffsetSeconds
+          : 0;
+        if (initialSeek > 0) {
+          pendingSeekRef.current = initialSeek;
+          if (audio.readyState > 0) {
+            audio.currentTime = initialSeek;
+          }
         }
       } catch { /* ignore InvalidStateError in Safari */ }
       setPlayerState("playing");
@@ -582,10 +619,13 @@ export function useAudioEngine(): AudioEngine {
   const playTrack = useCallback(async (track: PlayableTrack, resetQueue = false) => {
     if (resetQueue) {
       dispatchQueue({ type: "CLEAR" });
-    } else if (currentTrackRef.current) {
-      dispatchQueue({ type: "PUSH_HISTORY", track: currentTrackRef.current });
+      directLoadTrack(track, [track]);
+    } else {
+      if (currentTrackRef.current) {
+        dispatchQueue({ type: "PUSH_HISTORY", track: currentTrackRef.current });
+      }
+      directLoadTrack(track);
     }
-    directLoadTrack(track);
   }, [directLoadTrack]);
 
   // playPlaylist: load a full playlist starting at a given index.
@@ -597,7 +637,15 @@ export function useAudioEngine(): AudioEngine {
     const idx     = Math.max(0, Math.min(startIndex, tracks.length - 1));
     const current = tracks[idx];
     dispatchQueue({ type: "LOAD_PLAYLIST", tracks, startIndex: idx });
-    directLoadTrack(current);
+
+    const sequence = buildPlaybackSequence(
+      current,
+      tracks.slice(idx + 1),
+      tracks.slice(0, idx),
+      repeatModeRef.current,
+      shuffleOnRef.current
+    );
+    directLoadTrack(current, sequence);
   }, [directLoadTrack]);
 
   // ── Controls ──────────────────────────────────────────────────────────────
@@ -620,12 +668,41 @@ export function useAudioEngine(): AudioEngine {
   const getCurrentTime = useCallback(() => {
     const audio = audioRef.current;
     if (!audio || !isFinite(audio.currentTime)) return 0;
+    if (isHlsModeRef.current && hlsTracksRef.current.length > 0) {
+      const pos = mapHlsTimeToTrack(hlsTracksRef.current, audio.currentTime);
+      return pos ? pos.trackTime : audio.currentTime;
+    }
     return audio.currentTime;
   }, []);
 
   const seek = useCallback((seconds: number) => {
     const audio = audioRef.current;
     if (!audio || !isFinite(seconds)) return;
+
+    if (isHlsModeRef.current && hlsTracksRef.current.length > 0) {
+      const curPos = mapHlsTimeToTrack(hlsTracksRef.current, audio.currentTime);
+      const curIdx = curPos ? curPos.trackIndex : 0;
+      const startOffset = getTrackStartOffset(hlsTracksRef.current, curIdx);
+      const dur = curPos ? curPos.trackDuration : (currentTrackRef.current?.durationSeconds || 0);
+
+      // If seeking to or within 0.5s of the end of this track in HLS, advance directly to next track!
+      if (isFinite(dur) && dur > 0 && seconds >= dur - 0.5) {
+        const nextIdx = curIdx + 1;
+        if (nextIdx < hlsTracksRef.current.length) {
+          const nextOffset = getTrackStartOffset(hlsTracksRef.current, nextIdx);
+          audio.currentTime = nextOffset + 0.1;
+          return;
+        }
+      }
+
+      const targetInTrack = Math.max(0, Math.min(seconds, isFinite(dur) && dur > 0 ? dur : seconds));
+      audio.currentTime = startOffset + targetInTrack;
+      if (playerStateRef.current === "playing" && audio.paused) {
+        audio.play().catch((err) => console.warn("Failed to resume after seek:", err));
+      }
+      return;
+    }
+
     const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
     const dur = getCanonicalDuration(meta, audio.duration);
 
@@ -671,6 +748,8 @@ export function useAudioEngine(): AudioEngine {
 
   const clear = useCallback(() => {
     isKeepAliveRef.current = false;
+    isHlsModeRef.current = false;
+    hlsTracksRef.current = [];
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
@@ -692,13 +771,49 @@ export function useAudioEngine(): AudioEngine {
 
   // ── Queue management ──────────────────────────────────────────────────────
 
+  const syncHlsPlaylist = useCallback((
+    updatedQueue: PlayableTrack[],
+    updatedRepeatMode?: RepeatMode,
+    updatedShuffle?: boolean
+  ) => {
+    const audio = audioRef.current;
+    if (!audio || !supportsNativeHls(audio) || !currentTrackRef.current) return;
+    const current = currentTrackRef.current;
+    const curTime = getCurrentTime();
+    const rep = updatedRepeatMode !== undefined ? updatedRepeatMode : repeatModeRef.current;
+    const shuf = updatedShuffle !== undefined ? updatedShuffle : shuffleOnRef.current;
+    const sequence = buildPlaybackSequence(
+      current,
+      updatedQueue,
+      queueStateRef.current.history,
+      rep,
+      shuf
+    );
+    if (sequence.length > 1) {
+      isHlsModeRef.current = true;
+      hlsTracksRef.current = sequence;
+      const targetSrc = buildHlsPlaylistUrl(sequence, 0);
+      const isSameSrc = typeof window !== "undefined" && audio.src === new URL(targetSrc, window.location.href).href;
+      if (!isSameSrc) {
+        pendingSeekRef.current = curTime;
+        audio.src = targetSrc;
+        try { audio.currentTime = curTime; } catch {}
+        audio.play().catch(console.warn);
+      }
+    } else if (rep === "one") {
+      audio.loop = true;
+    }
+  }, [getCurrentTime]);
+
   const addToQueue = useCallback((t: PlayableTrack) => {
     if (!currentTrackRef.current) {
       void playTrack(t);
     } else {
+      const updatedQueue = [...queueStateRef.current.queue, t];
       dispatchQueue({ type: "ADD", track: t });
+      syncHlsPlaylist(updatedQueue);
     }
-  }, [playTrack]);
+  }, [playTrack, syncHlsPlaylist]);
 
   const removeFromQueue = useCallback((index: number) => {
     const all = allTracksRef.current;
@@ -726,15 +841,17 @@ export function useAudioEngine(): AudioEngine {
           history: newHistory,
           queue: newQueue,
         });
+        syncHlsPlaylist(newQueue);
       } else {
         dispatchQueue({
           type: "SET_ALL_TRACKS",
           history: [],
           queue: filtered,
         });
+        syncHlsPlaylist(filtered);
       }
     }
-  }, [clear]);
+  }, [clear, syncHlsPlaylist]);
 
   // "Bersihkan" button cleans the ENTIRE list including the currently playing track
   const clearQueue = useCallback(() => {
@@ -761,14 +878,16 @@ export function useAudioEngine(): AudioEngine {
         history: newHistory,
         queue: newQueue,
       });
+      syncHlsPlaylist(newQueue);
     } else {
       dispatchQueue({
         type: "SET_ALL_TRACKS",
         history: [],
         queue: reordered,
       });
+      syncHlsPlaylist(reordered);
     }
-  }, []);
+  }, [syncHlsPlaylist]);
 
   const toggleShuffle = useCallback(() => {
     const nextShuffle = !shuffleOnRef.current;
@@ -783,16 +902,19 @@ export function useAudioEngine(): AudioEngine {
         queue: shuffledQueue,
       });
       dispatchQueue({ type: "SET_SHUFFLE", shuffleOn: true });
+      syncHlsPlaylist(shuffledQueue, undefined, true);
     } else {
       dispatchQueue({ type: "SET_SHUFFLE", shuffleOn: false });
+      syncHlsPlaylist(queue, undefined, false);
     }
-  }, []);
+  }, [syncHlsPlaylist]);
 
   const setRepeatMode = useCallback((m: RepeatMode) => {
     setRepeatModeState(m);
     repeatModeRef.current = m;
     try { localStorage.setItem(REPEAT_KEY, m); } catch { /* ignore */ }
-  }, []);
+    syncHlsPlaylist(queueStateRef.current.queue, m);
+  }, [syncHlsPlaylist]);
 
   // ── Navigation ────────────────────────────────────────────────────────────
 
@@ -803,14 +925,26 @@ export function useAudioEngine(): AudioEngine {
     isAdvancingRef.current = true;
 
     try {
+      const audio     = audioRef.current;
       const current   = currentTrackRef.current;
       const repeat    = repeatModeRef.current;
       const shuffleOn = shuffleOnRef.current;
       const { queue, history } = queueStateRef.current;
 
-      // 1. repeat=one → restart current track synchronously (works seamlessly on iOS lock screen)
+      // 1. In HLS mode: seek within unbroken stream to the next track
+      if (isHlsModeRef.current && hlsTracksRef.current.length > 0 && audio) {
+        const curPos = mapHlsTimeToTrack(hlsTracksRef.current, audio.currentTime);
+        const curIdx = curPos ? curPos.trackIndex : 0;
+        const nextIdx = curIdx + 1;
+        if (nextIdx < hlsTracksRef.current.length) {
+          const nextOffset = getTrackStartOffset(hlsTracksRef.current, nextIdx);
+          audio.currentTime = nextOffset + 0.1;
+          return;
+        }
+      }
+
+      // 2. repeat=one → restart current track synchronously (works seamlessly on iOS lock screen)
       if (repeat === "one" && current) {
-        const audio = audioRef.current;
         if (audio) {
           audio.currentTime = 0;
           try {
@@ -822,7 +956,7 @@ export function useAudioEngine(): AudioEngine {
         return;
       }
 
-      // 2. Normal queue advancement or shuffle from existing queue:
+      // 3. Normal queue advancement or shuffle from existing queue:
       if (queue.length > 0) {
         let chosenIdx = 0;
         if (shuffleOn && queue.length > 1) {
@@ -845,7 +979,7 @@ export function useAudioEngine(): AudioEngine {
         return;
       }
 
-      // 3. Queue is empty: check repeat === "all"
+      // 4. Queue is empty: check repeat === "all"
       if (repeat === "all") {
         let full = current
           ? [...[...history].reverse(), current]
@@ -873,13 +1007,14 @@ export function useAudioEngine(): AudioEngine {
         }
       }
 
-      // 4. End of queue: stop playback and go idle
+      // 5. End of queue: stop playback and go idle
       dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
-      const audio = audioRef.current;
       if (audio) {
         audio.pause();
         audio.src = "";
       }
+      isHlsModeRef.current = false;
+      hlsTracksRef.current = [];
       setPlayerState("idle");
     } finally {
       isAdvancingRef.current = false;
@@ -889,7 +1024,24 @@ export function useAudioEngine(): AudioEngine {
   const advancePrev = useCallback(async () => {
     const audio = audioRef.current;
     const cur = getCurrentTime();
-    // If >3s played, restart rather than go back
+
+    // 1. In HLS mode: jump to start of current or previous track
+    if (isHlsModeRef.current && hlsTracksRef.current.length > 0 && audio) {
+      const curPos = mapHlsTimeToTrack(hlsTracksRef.current, audio.currentTime);
+      const curIdx = curPos ? curPos.trackIndex : 0;
+      if (cur > 3) {
+        const curOffset = getTrackStartOffset(hlsTracksRef.current, curIdx);
+        audio.currentTime = curOffset;
+        return;
+      }
+      if (curIdx > 0) {
+        const prevOffset = getTrackStartOffset(hlsTracksRef.current, curIdx - 1);
+        audio.currentTime = prevOffset;
+        return;
+      }
+    }
+
+    // 2. Direct mode: If >3s played, restart rather than go back
     if (cur > 3) {
       if (audio) {
         audio.currentTime = 0;
@@ -989,6 +1141,18 @@ export function useAudioEngine(): AudioEngine {
 
     const onLoadedMetadata = () => {
       if (isKeepAliveRef.current) return;
+      if (pendingSeekRef.current !== null && pendingSeekRef.current > 0) {
+        try {
+          audio.currentTime = pendingSeekRef.current;
+        } catch {}
+        pendingSeekRef.current = null;
+      }
+      if (isHlsModeRef.current && hlsTracksRef.current.length > 0) {
+        const pos = mapHlsTimeToTrack(hlsTracksRef.current, audio.currentTime);
+        const dur = pos ? pos.trackDuration : (currentTrackRef.current?.durationSeconds || 0);
+        if (dur > 0) setDuration(dur);
+        return;
+      }
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const canonical = getCanonicalDuration(meta, audio.duration);
       if (canonical > 0) setDuration(canonical);
@@ -996,6 +1160,12 @@ export function useAudioEngine(): AudioEngine {
 
     const onDurationChange = () => {
       if (isKeepAliveRef.current) return;
+      if (isHlsModeRef.current && hlsTracksRef.current.length > 0) {
+        const pos = mapHlsTimeToTrack(hlsTracksRef.current, audio.currentTime);
+        const dur = pos ? pos.trackDuration : (currentTrackRef.current?.durationSeconds || 0);
+        if (dur > 0) setDuration(dur);
+        return;
+      }
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const canonical = getCanonicalDuration(meta, audio.duration);
       if (canonical > 0) setDuration(canonical);
@@ -1016,9 +1186,46 @@ export function useAudioEngine(): AudioEngine {
     const onTimeUpdate = () => {
       if (isKeepAliveRef.current || isAdvancingRef.current) return;
       const cur = audio.currentTime;
+
+      // 1. In HLS mode: track transitions occur seamlessly inside the continuous stream
+      if (isHlsModeRef.current && hlsTracksRef.current.length > 1) {
+        const pos = mapHlsTimeToTrack(hlsTracksRef.current, cur);
+        if (pos && pos.track.videoId !== currentTrackRef.current?.videoId) {
+          const newTrack = pos.track;
+          currentTrackRef.current = newTrack;
+          setCurrentTrack(newTrack);
+          setDuration(pos.trackDuration);
+
+          if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+            try {
+              const meta = parseTrackMeta(newTrack.title, newTrack.channelName, newTrack.durationSeconds);
+              navigator.mediaSession.metadata = new MediaMetadata({
+                title:   meta.title,
+                artist:  meta.artist,
+                album:   meta.channelName || "Dengarkan",
+                artwork: buildArtwork(newTrack.thumbnailUrl),
+              });
+              navigator.mediaSession.playbackState = "playing";
+            } catch { /* ignore */ }
+          }
+
+          const remainingQueue = hlsTracksRef.current.slice(pos.trackIndex + 1);
+          dispatchQueue({
+            type: "ADVANCE_NEXT",
+            current: newTrack,
+            shuffleOn: shuffleOnRef.current,
+            repeatMode: repeatModeRef.current,
+            chosenIndex: 0,
+            nextTrack: remainingQueue[0] ?? null,
+            newQueue: remainingQueue,
+          });
+        }
+        return;
+      }
+
+      // 2. Direct single-track mode watchdog fallback if browser delays ended event
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const dur = getCanonicalDuration(meta, audio.duration);
-      // Watchdog fallback if browser delays ended event (satisfies mobile Safari lock screen)
       if (isFinite(dur) && dur > 0 && cur >= dur - 0.35) {
         void advanceNextRef.current();
       }
@@ -1120,6 +1327,8 @@ export function useAudioEngine(): AudioEngine {
     onPause:    pause,
     onNext:     next,
     onPrevious: previous,
+    onSeek:     seek,
+    getCurrentTime,
   });
 
 

@@ -162,10 +162,9 @@ export function SearchView() {
           {results.map((track) => {
             const isCurrent = currentTrack?.videoId === track.videoId;
             const isAdded   = justAdded === track.videoId;
+            const meta      = parseTrackMeta(track.title, track.channelName, track.durationFormatted || track.durationSeconds);
 
-            return (() => {
-              const meta = parseTrackMeta(track.title, track.channelName, track.durationFormatted || track.durationSeconds);
-              return (
+            return (
               <div
                 key={track.videoId}
                 className={`group flex items-center justify-between gap-2 p-2.5 sm:p-3 rounded-2xl transition-default border ${
@@ -249,8 +248,7 @@ export function SearchView() {
                   <AddToPlaylistButton track={track} />
                 </div>
               </div>
-              );
-            })();
+            );
           })}
         </div>
       )}

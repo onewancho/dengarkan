@@ -15,10 +15,6 @@ export const metadata: Metadata = {
   description:
     "Aplikasi audio YouTube sederhana, cepat, ringan, dan nyaman digunakan satu tangan. Putar musik dan podcast tanpa video bloat.",
   manifest: undefined, // Explicitly no manifest — NOT a standalone PWA
-  appleWebApp: {
-    capable: false, // Do NOT enable standalone mode — kills iOS background audio
-    title: "Dengarkan",
-  },
 };
 
 export const viewport: Viewport = {

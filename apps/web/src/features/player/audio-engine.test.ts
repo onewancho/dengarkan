@@ -131,7 +131,16 @@ type QueueAction =
   | { type: "ADD";    track: PlayableTrack }
   | { type: "REMOVE"; index: number }
   | { type: "CLEAR" }
-  | { type: "ADVANCE_NEXT"; current: PlayableTrack | null; shuffleOn: boolean; chosenIndex?: number }
+  | { type: "CLEAR_ALL" }
+  | {
+      type: "ADVANCE_NEXT";
+      current: PlayableTrack | null;
+      shuffleOn: boolean;
+      repeatMode?: RepeatMode;
+      chosenIndex?: number;
+      nextTrack?: PlayableTrack | null;
+      newQueue?: PlayableTrack[];
+    }
   | { type: "ADVANCE_PREV"; current: PlayableTrack | null }
   | { type: "PUSH_HISTORY"; track: PlayableTrack }
   | { type: "SHUFFLE_TOGGLE" }
@@ -154,6 +163,8 @@ function queueReducer(state: QueueState, action: QueueAction): QueueState {
       return { ...state, queue: state.queue.filter((_, i) => i !== action.index) };
     case "CLEAR":
       return { ...state, queue: [] };
+    case "CLEAR_ALL":
+      return { ...state, queue: [], history: [], nextTrack: null };
     case "PUSH_HISTORY": {
       const history = [action.track, ...state.history].slice(0, HISTORY_MAX);
       return { ...state, history };
@@ -351,6 +362,17 @@ describe("Audio Engine — queueReducer: CLEAR", () => {
     s = queueReducer(s, { type: "ADD", track: makeTrack("c1") });
     s = queueReducer(s, { type: "CLEAR" });
     assert.equal(s.history.length, 1);
+  });
+});
+
+describe("Audio Engine — queueReducer: CLEAR_ALL", () => {
+  it("clears both queue and history completely", () => {
+    let s = queueReducer(initialQueueState(), { type: "PUSH_HISTORY", track: makeTrack("h1") });
+    s = queueReducer(s, { type: "ADD", track: makeTrack("c1") });
+    s = queueReducer(s, { type: "CLEAR_ALL" });
+    assert.equal(s.queue.length, 0);
+    assert.equal(s.history.length, 0);
+    assert.equal(s.nextTrack, null);
   });
 });
 

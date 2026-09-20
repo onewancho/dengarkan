@@ -143,8 +143,8 @@ export default function QueuePage() {
             {repeatLabel}
           </button>
 
-          {/* Clear All (only when allTracks has > 1 items) */}
-          {allTracks.length > 1 && (
+          {/* Clear All (when any tracks exist) */}
+          {allTracks.length > 0 && (
             <button
               onClick={clearQueue}
               className="ml-auto flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-semibold text-[#FF3B30] bg-[#FF3B30]/10 hover:bg-[#FF3B30]/20 border border-[#FF3B30]/20 transition-default min-h-[40px] cursor-pointer"

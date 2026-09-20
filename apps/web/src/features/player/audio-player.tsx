@@ -695,12 +695,12 @@ export function AudioPlayer() {
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  {allTracks.length > 1 && (
+                  {allTracks.length > 0 && (
                     <button
                       onClick={clearQueue}
                       className="text-xs text-[#FF3B30] hover:underline px-2 py-1"
                     >
-                      Hapus semua
+                      Bersihkan
                     </button>
                   )}
                   <button

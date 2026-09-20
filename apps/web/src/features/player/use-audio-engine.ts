@@ -50,12 +50,6 @@ import type { PlayerState, AudioStream, SearchResult, QueueTrack } from "@dengar
 import { apiClient } from "@/services/api-client";
 import { useMediaSession, buildArtwork } from "./use-media-session";
 import { parseTrackMeta } from "@/lib/track-meta";
-import {
-  isIosOrMobileWebKit,
-  buildContinuousStreamUrl,
-  getContinuousTrackOffset,
-  mapContinuousTimeToTrack,
-} from "./continuous-player";
 
 // ── Client Stream Cache ───────────────────────────────────────────────────────
 // In-memory cache for resolved stream URLs so track transitions (especially
@@ -250,7 +244,16 @@ type QueueAction =
   | { type: "ADD";    track: PlayableTrack }
   | { type: "REMOVE"; index: number }
   | { type: "CLEAR" }
-  | { type: "ADVANCE_NEXT"; current: PlayableTrack | null; shuffleOn: boolean; repeatMode?: RepeatMode; chosenIndex?: number }
+  | { type: "CLEAR_ALL" }
+  | {
+      type: "ADVANCE_NEXT";
+      current: PlayableTrack | null;
+      shuffleOn: boolean;
+      repeatMode?: RepeatMode;
+      chosenIndex?: number;
+      nextTrack?: PlayableTrack | null;
+      newQueue?: PlayableTrack[];
+    }
   | { type: "ADVANCE_PREV"; current: PlayableTrack | null }
   | { type: "PUSH_HISTORY"; track: PlayableTrack }
   | { type: "SHUFFLE_TOGGLE" }
@@ -280,19 +283,40 @@ function queueReducer(state: QueueState, action: QueueAction): QueueState {
     case "CLEAR":
       return { ...state, queue: [] };
 
+    case "CLEAR_ALL":
+      return { ...state, queue: [], history: [], nextTrack: null };
+
     case "PUSH_HISTORY": {
       const history = [action.track, ...state.history].slice(0, HISTORY_MAX);
       return { ...state, history };
     }
 
     case "ADVANCE_NEXT": {
+      // Deterministic path: if nextTrack and newQueue were already selected by advanceNext()
+      if (action.newQueue !== undefined && action.nextTrack !== undefined) {
+        const history = action.current
+          ? (action.repeatMode === "all" && state.queue.length === 0
+              ? []
+              : [action.current, ...state.history].slice(0, HISTORY_MAX))
+          : state.history;
+        return {
+          ...state,
+          queue: action.newQueue,
+          history,
+          nextTrack: action.nextTrack,
+        };
+      }
+
       const { queue, shuffleOn } = state;
       if (queue.length === 0) {
         if (action.repeatMode === "all") {
-          const full = action.current
+          let full = action.current
             ? [...[...state.history].reverse(), action.current]
             : [...state.history].reverse();
           if (full.length > 0) {
+            if (action.shuffleOn && full.length > 1) {
+              full = shuffleArray(full, true);
+            }
             const nextTrack = { ...full[0] };
             const newQueue  = full.slice(1);
             return { ...state, queue: newQueue, history: [], nextTrack };
@@ -403,12 +427,6 @@ export function useAudioEngine(): AudioEngine {
   const lastAdvanceTimeRef = useRef(0);
   const advanceNextRef   = useRef<() => Promise<void>>(() => Promise.resolve());
 
-  // Continuous stream refs for unbreakable iOS lock screen playback
-  const continuousActiveRef    = useRef(false);
-  const continuousTracksRef    = useRef<PlayableTrack[]>([]);
-  const continuousOffsetRef    = useRef(0);
-  const continuousSessionIdRef = useRef<string>("");
-  const continuousFailedRef    = useRef(false);
 
   // Sync refs synchronously every render to prevent any stale closures
   currentTrackRef.current  = currentTrack;
@@ -456,7 +474,8 @@ export function useAudioEngine(): AudioEngine {
     } else {
       if (queue.length > 0) candidates.push(queue[0]);
       if (queue.length > 1) candidates.push(queue[1]);
-      if (candidates.length === 0 && repeatMode === "all") {
+      if (queue.length > 2) candidates.push(queue[2]);
+      if (repeatMode === "all") {
         const full = [...history].reverse();
         if (full.length > 0) candidates.push(full[0]);
       }
@@ -475,8 +494,9 @@ export function useAudioEngine(): AudioEngine {
     if (typeof window === "undefined") return;
 
     const audio = new Audio();
-    audio.preload = "metadata";
+    audio.preload = "auto";
     audio.setAttribute("playsinline", "");
+    audio.setAttribute("webkit-playsinline", "");
     const saved = parseFloat(localStorage.getItem(VOLUME_KEY) ?? String(DEFAULT_VOLUME));
     audio.volume = isFinite(saved) && saved >= 0 && saved <= 1 ? saved : DEFAULT_VOLUME;
     audioRef.current = audio;
@@ -493,101 +513,10 @@ export function useAudioEngine(): AudioEngine {
 
   // ── Core: resolve stream and play ─────────────────────────────────────────
 
-  // ── Continuous Stream Mode (for iOS Lock Screen continuous playback) ────────
-
-  const startContinuousStream = useCallback(async (
-    tracks: PlayableTrack[],
-    startIndex: number = 0,
-    seekSeconds: number = 0
-  ) => {
-    if (tracks.length === 0) return;
-    const idx = Math.max(0, Math.min(startIndex, tracks.length - 1));
-    const activeTrack = tracks[idx];
-    const rep = repeatModeRef.current;
-    const isShuffle = shuffleOnRef.current;
-
-    let streamTracks: PlayableTrack[];
-
-    if (seekSeconds > 0 && continuousTracksRef.current.length > 0 && continuousTracksRef.current[0].videoId === activeTrack.videoId) {
-      // Seeking within currently playing continuous track: keep existing stream sequence
-      streamTracks = continuousTracksRef.current;
-    } else {
-      let remaining = tracks.slice(idx + 1);
-      if (isShuffle && remaining.length > 1) {
-        remaining = shuffleArray(remaining, true);
-      }
-
-      if (rep === "one") {
-        streamTracks = [activeTrack];
-      } else if (rep === "all") {
-        const { history } = queueStateRef.current;
-        let extra = history.slice().reverse().filter((t) => t.videoId !== activeTrack.videoId);
-        if (isShuffle && extra.length > 1) {
-          extra = shuffleArray(extra);
-        }
-        streamTracks = [activeTrack, ...remaining, ...extra];
-      } else {
-        streamTracks = [activeTrack, ...remaining];
-      }
-
-      // Sync React queueState if shuffle randomized the remaining order
-      if (isShuffle && remaining.length > 0) {
-        dispatchQueue({
-          type: "SET_ALL_TRACKS",
-          history: queueStateRef.current.history,
-          queue: remaining,
-        });
-      }
-    }
-
-    const sid = `cs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    continuousSessionIdRef.current = sid;
-    continuousActiveRef.current = true;
-    continuousTracksRef.current = streamTracks;
-    continuousOffsetRef.current = seekSeconds > 0 ? seekSeconds : 0;
-
-    currentTrackRef.current = activeTrack;
-    setCurrentTrack(activeTrack);
-    setDuration(activeTrack.durationSeconds || 180);
-
-    // Sync MediaSession immediately in this synchronous tick so iOS Lock Screen updates instantly
-    if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
-      try {
-        const meta = parseTrackMeta(activeTrack.title, activeTrack.channelName, activeTrack.durationSeconds);
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title:   meta.title,
-          artist:  meta.artist,
-          album:   meta.channelName || "Dengarkan",
-          artwork: buildArtwork(activeTrack.thumbnailUrl),
-        });
-        navigator.mediaSession.playbackState = "playing";
-      } catch { /* ignore */ }
-    }
-
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const streamUrl = buildContinuousStreamUrl(streamTracks, 0, undefined, sid, seekSeconds, rep);
-    isKeepAliveRef.current = false;
-    audio.loop = false;
-    audio.src = streamUrl;
-    try {
-      if (audio.readyState > 0 && audio.currentTime !== 0) {
-        audio.currentTime = 0;
-      }
-    } catch { /* ignore InvalidStateError in Safari */ }
-
-    setPlayerState("playing");
-    try {
-      await audio.play();
-    } catch (e) {
-      console.warn("Continuous audio.play() failed:", e);
-    }
-  }, []);
-
-  // ── Core: resolve stream and play ─────────────────────────────────────────
-
-  const directLoadTrack = useCallback(async (track: PlayableTrack) => {
+  // Synchronous direct track load: sets audio.src and initiates play in the exact same tick
+  // to satisfy mobile browsers (Safari iOS lock screen background playback)
+  const directLoadTrack = useCallback((track: PlayableTrack) => {
+    currentTrackRef.current = track;
     setCurrentTrack(track);
     setDuration(track.durationSeconds || 0);
 
@@ -608,70 +537,46 @@ export function useAudioEngine(): AudioEngine {
       } catch { /* ignore */ }
     }
 
-    continuousActiveRef.current = false;
-    if (cachedStream) {
-      // FAST SYNCHRONOUS PATH: Stream is already resolved and cached in memory.
-      // Setting src and calling play() in this tick satisfies mobile browser
-      // requirement for continuous audio transitions when screen is locked.
-      setCurrentStream(cachedStream);
-      if (cachedStream.durationSeconds && cachedStream.durationSeconds > 0) {
-        setDuration(cachedStream.durationSeconds);
-      }
-      if (audio) {
-        isKeepAliveRef.current = false;
-        audio.loop = false;
-        audio.src = getProxyStreamUrl(cachedStream.videoId);
-        try {
-          if (audio.readyState > 0 && audio.currentTime !== 0) {
-            audio.currentTime = 0;
-          }
-        } catch { /* ignore InvalidStateError in Safari */ }
-        setPlayerState("playing");
-        try {
-          await audio.play();
-        } catch (e) {
-          console.warn("Audio play failed on cached stream:", e);
-        }
-      }
-      return;
-    }
-
-    // FALLBACK PATH: Stream not yet in cache.
-    setPlayerState("loading");
-    try {
-      const stream = await fetchStreamWithCache(track.videoId);
-      setCurrentStream(stream);
-      if (stream.durationSeconds && stream.durationSeconds > 0) {
-        setDuration(stream.durationSeconds);
-      }
-
-      if (!audio) return;
+    if (audio) {
       isKeepAliveRef.current = false;
       audio.loop = false;
-      audio.src = getProxyStreamUrl(stream.videoId);
+      const targetSrc = getProxyStreamUrl(track.videoId);
+      if (audio.src !== targetSrc) {
+        audio.src = targetSrc;
+      }
       try {
         if (audio.readyState > 0 && audio.currentTime !== 0) {
           audio.currentTime = 0;
         }
       } catch { /* ignore InvalidStateError in Safari */ }
       setPlayerState("playing");
-      await audio.play();
-    } catch {
-      setPlayerState("error");
+      audio.play().catch((e) => {
+        console.warn("Audio play failed on direct load:", e);
+      });
+    }
+
+    if (cachedStream) {
+      setCurrentStream(cachedStream);
+      if (cachedStream.durationSeconds && cachedStream.durationSeconds > 0) {
+        setDuration(cachedStream.durationSeconds);
+      }
+    } else {
+      void fetchStreamWithCache(track.videoId)
+        .then((stream) => {
+          setCurrentStream(stream);
+          if (stream.durationSeconds && stream.durationSeconds > 0) {
+            setDuration(stream.durationSeconds);
+          }
+        })
+        .catch((err) => {
+          console.warn("Background fetchStreamWithCache failed:", err);
+        });
     }
   }, [fetchStreamWithCache, getCachedStream]);
 
   const loadTrack = useCallback(async (track: PlayableTrack) => {
-    if (isIosOrMobileWebKit() && !continuousFailedRef.current) {
-      let q = queueStateRef.current.queue;
-      if (shuffleOnRef.current && q.length > 1) {
-        q = shuffleArray(q, true);
-      }
-      await startContinuousStream([track, ...q], 0);
-      return;
-    }
-    await directLoadTrack(track);
-  }, [directLoadTrack, startContinuousStream]);
+    directLoadTrack(track);
+  }, [directLoadTrack]);
 
   // playTrack = loadTrack + optionally reset queue
   const playTrack = useCallback(async (track: PlayableTrack, resetQueue = false) => {
@@ -680,17 +585,8 @@ export function useAudioEngine(): AudioEngine {
     } else if (currentTrackRef.current) {
       dispatchQueue({ type: "PUSH_HISTORY", track: currentTrackRef.current });
     }
-
-    if (isIosOrMobileWebKit() && !continuousFailedRef.current) {
-      let remainingQueue = resetQueue ? [] : queueStateRef.current.queue;
-      if (shuffleOnRef.current && remainingQueue.length > 1) {
-        remainingQueue = shuffleArray(remainingQueue, true);
-      }
-      await startContinuousStream([track, ...remainingQueue], 0);
-    } else {
-      await loadTrack(track);
-    }
-  }, [loadTrack, startContinuousStream]);
+    directLoadTrack(track);
+  }, [directLoadTrack]);
 
   // playPlaylist: load a full playlist starting at a given index.
   const playPlaylist = useCallback(async (
@@ -700,20 +596,9 @@ export function useAudioEngine(): AudioEngine {
     if (tracks.length === 0) return;
     const idx     = Math.max(0, Math.min(startIndex, tracks.length - 1));
     const current = tracks[idx];
-    // Set queue state first (synchronous)
     dispatchQueue({ type: "LOAD_PLAYLIST", tracks, startIndex: idx });
-
-    let remaining = tracks.slice(idx + 1);
-    if (shuffleOnRef.current && remaining.length > 1) {
-      remaining = shuffleArray(remaining, true);
-    }
-
-    if (isIosOrMobileWebKit() && !continuousFailedRef.current) {
-      await startContinuousStream([current, ...remaining], 0);
-    } else {
-      await loadTrack(current);
-    }
-  }, [loadTrack, startContinuousStream]);
+    directLoadTrack(current);
+  }, [directLoadTrack]);
 
   // ── Controls ──────────────────────────────────────────────────────────────
 
@@ -735,11 +620,6 @@ export function useAudioEngine(): AudioEngine {
   const getCurrentTime = useCallback(() => {
     const audio = audioRef.current;
     if (!audio || !isFinite(audio.currentTime)) return 0;
-    if (continuousActiveRef.current && continuousTracksRef.current.length > 0) {
-      const totalTime = audio.currentTime + continuousOffsetRef.current;
-      const mapped = mapContinuousTimeToTrack(continuousTracksRef.current, totalTime, repeatModeRef.current);
-      return mapped ? mapped.trackTime : totalTime;
-    }
     return audio.currentTime;
   }, []);
 
@@ -757,23 +637,6 @@ export function useAudioEngine(): AudioEngine {
 
     const target = Math.max(0, Math.min(seconds, isFinite(dur) ? dur : seconds));
     if (isFinite(target)) {
-      if (continuousActiveRef.current) {
-        const cur = currentTrackRef.current;
-        let tracksToStream: PlayableTrack[];
-        if (continuousTracksRef.current.length > 0 && continuousTracksRef.current[0].videoId === cur?.videoId) {
-          tracksToStream = continuousTracksRef.current;
-        } else {
-          const remainingQueue = queueStateRef.current.queue;
-          tracksToStream = cur ? [cur, ...remainingQueue] : continuousTracksRef.current;
-        }
-
-        if (tracksToStream.length > 0) {
-          // Reconnect continuous stream from target seek offset with instant low-latency FFmpeg -ss
-          void startContinuousStream(tracksToStream, 0, target);
-          return;
-        }
-      }
-
       try {
         audio.currentTime = target;
         if (playerStateRef.current === "playing" && audio.paused) {
@@ -783,7 +646,7 @@ export function useAudioEngine(): AudioEngine {
         console.warn("Failed to seek audio:", err);
       }
     }
-  }, [startContinuousStream]);
+  }, []);
 
   const setVolume = useCallback((v: number) => {
     const clamped = Math.max(0, Math.min(1, v));
@@ -808,17 +671,23 @@ export function useAudioEngine(): AudioEngine {
 
   const clear = useCallback(() => {
     isKeepAliveRef.current = false;
-    continuousActiveRef.current = false;
-    continuousTracksRef.current = [];
-    continuousOffsetRef.current = 0;
-    continuousSessionIdRef.current = "";
     const audio = audioRef.current;
-    if (audio) { audio.pause(); audio.loop = false; audio.src = ""; }
+    if (audio) {
+      audio.pause();
+      audio.loop = false;
+      audio.src = "";
+    }
     setCurrentTrack(null);
     setCurrentStream(null);
     setPlayerState("idle");
     setDuration(0);
-    dispatchQueue({ type: "CLEAR" });
+    dispatchQueue({ type: "CLEAR_ALL" });
+    if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+      try {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.playbackState = "none";
+      } catch { /* ignore */ }
+    }
   }, []);
 
   // ── Queue management ──────────────────────────────────────────────────────
@@ -828,15 +697,6 @@ export function useAudioEngine(): AudioEngine {
       void playTrack(t);
     } else {
       dispatchQueue({ type: "ADD", track: t });
-      if (continuousActiveRef.current) {
-        continuousTracksRef.current = [...continuousTracksRef.current, t];
-        if (continuousSessionIdRef.current) {
-          void apiClient.audio.updateContinuousQueue(
-            continuousSessionIdRef.current,
-            continuousTracksRef.current
-          ).catch(() => {});
-        }
-      }
     }
   }, [playTrack]);
 
@@ -866,15 +726,6 @@ export function useAudioEngine(): AudioEngine {
           history: newHistory,
           queue: newQueue,
         });
-        if (continuousActiveRef.current && currentTrackRef.current) {
-          continuousTracksRef.current = [currentTrackRef.current, ...newQueue];
-          if (continuousSessionIdRef.current) {
-            void apiClient.audio.updateContinuousQueue(
-              continuousSessionIdRef.current,
-              continuousTracksRef.current
-            ).catch(() => {});
-          }
-        }
       } else {
         dispatchQueue({
           type: "SET_ALL_TRACKS",
@@ -885,22 +736,10 @@ export function useAudioEngine(): AudioEngine {
     }
   }, [clear]);
 
+  // "Bersihkan" button cleans the ENTIRE list including the currently playing track
   const clearQueue = useCallback(() => {
-    dispatchQueue({
-      type: "SET_ALL_TRACKS",
-      history: [],
-      queue: [],
-    });
-    if (continuousActiveRef.current && currentTrackRef.current) {
-      continuousTracksRef.current = [currentTrackRef.current];
-      if (continuousSessionIdRef.current) {
-        void apiClient.audio.updateContinuousQueue(
-          continuousSessionIdRef.current,
-          continuousTracksRef.current
-        ).catch(() => {});
-      }
-    }
-  }, []);
+    clear();
+  }, [clear]);
 
   const reorderQueue = useCallback((fromIndex: number, toIndex: number) => {
     const all = allTracksRef.current;
@@ -922,15 +761,6 @@ export function useAudioEngine(): AudioEngine {
         history: newHistory,
         queue: newQueue,
       });
-      if (continuousActiveRef.current && currentTrackRef.current) {
-        continuousTracksRef.current = [currentTrackRef.current, ...newQueue];
-        if (continuousSessionIdRef.current) {
-          void apiClient.audio.updateContinuousQueue(
-            continuousSessionIdRef.current,
-            continuousTracksRef.current
-          ).catch(() => {});
-        }
-      }
     } else {
       dispatchQueue({
         type: "SET_ALL_TRACKS",
@@ -945,8 +775,6 @@ export function useAudioEngine(): AudioEngine {
     shuffleOnRef.current = nextShuffle;
 
     const { queue, history } = queueStateRef.current;
-    const cur = currentTrackRef.current;
-
     if (nextShuffle) {
       const shuffledQueue = queue.length > 1 ? shuffleArray(queue, true) : [...queue];
       dispatchQueue({
@@ -955,41 +783,8 @@ export function useAudioEngine(): AudioEngine {
         queue: shuffledQueue,
       });
       dispatchQueue({ type: "SET_SHUFFLE", shuffleOn: true });
-
-      if (continuousActiveRef.current && cur) {
-        let streamTracks: PlayableTrack[] = [cur, ...shuffledQueue];
-        if (repeatModeRef.current === "all" && history.length > 0) {
-          const histShuffled = shuffleArray(history.filter((t) => t.videoId !== cur.videoId));
-          streamTracks = [cur, ...shuffledQueue, ...histShuffled];
-        } else if (repeatModeRef.current === "one") {
-          streamTracks = [cur];
-        }
-        continuousTracksRef.current = streamTracks;
-        if (continuousSessionIdRef.current) {
-          void apiClient.audio.updateContinuousQueue(
-            continuousSessionIdRef.current,
-            streamTracks
-          ).catch(() => {});
-        }
-      }
     } else {
       dispatchQueue({ type: "SET_SHUFFLE", shuffleOn: false });
-      if (continuousActiveRef.current && cur) {
-        let streamTracks: PlayableTrack[] = [cur, ...queue];
-        if (repeatModeRef.current === "all" && history.length > 0) {
-          const histReversed = history.slice().reverse().filter((t) => t.videoId !== cur.videoId);
-          streamTracks = [cur, ...queue, ...histReversed];
-        } else if (repeatModeRef.current === "one") {
-          streamTracks = [cur];
-        }
-        continuousTracksRef.current = streamTracks;
-        if (continuousSessionIdRef.current) {
-          void apiClient.audio.updateContinuousQueue(
-            continuousSessionIdRef.current,
-            streamTracks
-          ).catch(() => {});
-        }
-      }
     }
   }, []);
 
@@ -997,27 +792,6 @@ export function useAudioEngine(): AudioEngine {
     setRepeatModeState(m);
     repeatModeRef.current = m;
     try { localStorage.setItem(REPEAT_KEY, m); } catch { /* ignore */ }
-    if (continuousActiveRef.current && continuousSessionIdRef.current) {
-      void apiClient.audio.setContinuousRepeat(continuousSessionIdRef.current, m).catch(() => {});
-      const cur = currentTrackRef.current;
-      const { queue, history } = queueStateRef.current;
-      if (cur) {
-        let tracks: PlayableTrack[] = [];
-        if (m === "one") {
-          tracks = [cur];
-        } else if (m === "all") {
-          let historyPart = history.slice().reverse().filter((t) => t.videoId !== cur.videoId);
-          if (shuffleOnRef.current && historyPart.length > 1) {
-            historyPart = shuffleArray(historyPart);
-          }
-          tracks = [cur, ...queue, ...historyPart];
-        } else {
-          tracks = [cur, ...queue];
-        }
-        continuousTracksRef.current = tracks;
-        void apiClient.audio.updateContinuousQueue(continuousSessionIdRef.current, tracks).catch(() => {});
-      }
-    }
   }, []);
 
   // ── Navigation ────────────────────────────────────────────────────────────
@@ -1032,106 +806,91 @@ export function useAudioEngine(): AudioEngine {
       const current   = currentTrackRef.current;
       const repeat    = repeatModeRef.current;
       const shuffleOn = shuffleOnRef.current;
+      const { queue, history } = queueStateRef.current;
 
-      // repeat=one → restart current track
+      // 1. repeat=one → restart current track synchronously (works seamlessly on iOS lock screen)
       if (repeat === "one" && current) {
-        if (continuousActiveRef.current) {
-          await startContinuousStream([current, ...queueStateRef.current.queue], 0, 0);
-        } else {
-          const audio = audioRef.current;
-          if (audio) {
-            audio.currentTime = 0;
-            try {
-              await audio.play();
-            } catch (e) {
-              console.error("Failed to replay track in repeat=one", e);
-            }
+        const audio = audioRef.current;
+        if (audio) {
+          audio.currentTime = 0;
+          try {
+            await audio.play();
+          } catch (e) {
+            console.error("Failed to replay track in repeat=one", e);
           }
         }
         return;
       }
 
-      const { queue, history } = queueStateRef.current;
+      // 2. Normal queue advancement or shuffle from existing queue:
+      if (queue.length > 0) {
+        let chosenIdx = 0;
+        if (shuffleOn && queue.length > 1) {
+          chosenIdx = Math.floor(Math.random() * queue.length);
+        }
+        const nextTrack = queue[chosenIdx];
+        const newQueue  = queue.filter((_, i) => i !== chosenIdx);
 
-      if (continuousActiveRef.current) {
-        if (queue.length > 0) {
-          let chosenIdx = 0;
-          if (shuffleOn && queue.length > 1) {
-            chosenIdx = Math.floor(Math.random() * queue.length);
+        dispatchQueue({
+          type: "ADVANCE_NEXT",
+          current,
+          shuffleOn,
+          repeatMode: repeat,
+          chosenIndex: chosenIdx,
+          nextTrack,
+          newQueue,
+        });
+
+        directLoadTrack(nextTrack);
+        return;
+      }
+
+      // 3. Queue is empty: check repeat === "all"
+      if (repeat === "all") {
+        let full = current
+          ? [...[...history].reverse(), current]
+          : [...history].reverse();
+
+        if (full.length > 0) {
+          if (shuffleOn && full.length > 1) {
+            full = shuffleArray(full, true);
           }
-          const nextTrack = queue[chosenIdx];
-          const remaining = queue.filter((_, i) => i !== chosenIdx);
+          const nextTrack = { ...full[0] };
+          const newQueue  = full.slice(1);
+
           dispatchQueue({
             type: "ADVANCE_NEXT",
             current,
             shuffleOn,
             repeatMode: repeat,
-            chosenIndex: chosenIdx,
+            chosenIndex: 0,
+            nextTrack,
+            newQueue,
           });
-          await startContinuousStream([nextTrack, ...remaining], 0);
+
+          directLoadTrack(nextTrack);
           return;
         }
-        if (repeat === "all") {
-          let full = current
-            ? [...[...history].reverse(), current]
-            : [...history].reverse();
-          if (full.length > 0) {
-            if (shuffleOn && full.length > 1) {
-              full = shuffleArray(full, true);
-            }
-            dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat, chosenIndex: 0 });
-            await startContinuousStream(full, 0);
-            return;
-          }
-        }
-        continuousActiveRef.current = false;
-        continuousTracksRef.current = [];
-        continuousOffsetRef.current = 0;
-        continuousSessionIdRef.current = "";
-        const audio = audioRef.current;
-        if (audio) { audio.pause(); audio.src = ""; }
-        setPlayerState("idle");
-        return;
       }
 
-      if (queue.length === 0) {
-        if (repeat === "all") {
-          const full = current
-            ? [...[...history].reverse(), current]
-            : [...history].reverse();
-          if (full.length > 0) {
-            const nextTrack = { ...full[0] };
-            dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat, chosenIndex: 0 });
-            await loadTrack(nextTrack);
-            return;
-          }
-        }
-        dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
-        setPlayerState("idle");
-        return;
+      // 4. End of queue: stop playback and go idle
+      dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
+      const audio = audioRef.current;
+      if (audio) {
+        audio.pause();
+        audio.src = "";
       }
-
-      let idx = 0;
-      if (shuffleOn) {
-        idx = Math.floor(Math.random() * queue.length);
-      }
-      const nextTrack = queue[idx];
-      dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat, chosenIndex: idx });
-      await loadTrack(nextTrack);
+      setPlayerState("idle");
     } finally {
       isAdvancingRef.current = false;
     }
-  }, [loadTrack, startContinuousStream]);
+  }, [directLoadTrack]);
 
   const advancePrev = useCallback(async () => {
     const audio = audioRef.current;
     const cur = getCurrentTime();
     // If >3s played, restart rather than go back
     if (cur > 3) {
-      if (continuousActiveRef.current) {
-        seek(0);
-        return;
-      }
       if (audio) {
         audio.currentTime = 0;
         try {
@@ -1143,20 +902,15 @@ export function useAudioEngine(): AudioEngine {
       return;
     }
 
-    const { history, queue } = queueStateRef.current;
+    const { history } = queueStateRef.current;
     if (history.length === 0) return;
 
     const prevTrack = history[0];
     const current = currentTrackRef.current;
 
     dispatchQueue({ type: "ADVANCE_PREV", current });
-    if (continuousActiveRef.current) {
-      const full = current ? [prevTrack, current, ...queue] : [prevTrack, ...queue];
-      await startContinuousStream(full, 0);
-    } else {
-      await loadTrack(prevTrack);
-    }
-  }, [loadTrack, startContinuousStream, getCurrentTime, seek]);
+    directLoadTrack(prevTrack);
+  }, [directLoadTrack, getCurrentTime]);
 
   const playTrackAtIndex = useCallback(async (index: number) => {
     const all = allTracksRef.current;
@@ -1185,12 +939,8 @@ export function useAudioEngine(): AudioEngine {
       queue: newQueue,
     });
 
-    if ((isIosOrMobileWebKit() && !continuousFailedRef.current) || continuousActiveRef.current) {
-      await startContinuousStream([target, ...newQueue], 0);
-    } else {
-      await loadTrack(target);
-    }
-  }, [loadTrack, startContinuousStream]);
+    directLoadTrack(target);
+  }, [directLoadTrack]);
 
   const playFromQueue = playTrackAtIndex;
 
@@ -1258,59 +1008,18 @@ export function useAudioEngine(): AudioEngine {
 
     const onEnded = () => {
       if (isKeepAliveRef.current) return;
-      if (continuousActiveRef.current) {
-        continuousActiveRef.current = false;
-        continuousTracksRef.current = [];
-        continuousOffsetRef.current = 0;
-        continuousSessionIdRef.current = "";
-      }
       void advanceNextRef.current();
     };
 
-    // ── TimeUpdate watchdog: fallback if browser doesn't fire ended event ─
+    // ── TimeUpdate watchdog: fallback if browser delays ended event ─
 
     const onTimeUpdate = () => {
       if (isKeepAliveRef.current || isAdvancingRef.current) return;
       const cur = audio.currentTime;
-
-      if (continuousActiveRef.current && continuousTracksRef.current.length > 0) {
-        const totalTime = cur + continuousOffsetRef.current;
-        const mapped = mapContinuousTimeToTrack(continuousTracksRef.current, totalTime, repeatModeRef.current);
-        if (mapped && mapped.track.videoId !== currentTrackRef.current?.videoId) {
-          const previousTrack = currentTrackRef.current;
-          const newTrack = mapped.track;
-          currentTrackRef.current = newTrack;
-          setCurrentTrack(newTrack);
-          setDuration(mapped.trackDuration);
-
-          if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
-            try {
-              const meta = parseTrackMeta(newTrack.title, newTrack.channelName, newTrack.durationSeconds);
-              navigator.mediaSession.metadata = new MediaMetadata({
-                title:   meta.title,
-                artist:  meta.artist,
-                album:   meta.channelName || "Dengarkan",
-                artwork: buildArtwork(newTrack.thumbnailUrl),
-              });
-              navigator.mediaSession.playbackState = "playing";
-            } catch { /* ignore */ }
-          }
-
-          dispatchQueue({
-            type: "ADVANCE_NEXT",
-            current: previousTrack,
-            shuffleOn: shuffleOnRef.current,
-            repeatMode: repeatModeRef.current,
-            chosenIndex: 0,
-          });
-          return;
-        }
-      }
-
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const dur = getCanonicalDuration(meta, audio.duration);
-      // Watchdog fallback if browser delays ended event (only for non-continuous stream)
-      if (!continuousActiveRef.current && isFinite(dur) && dur > 0 && cur >= dur - 0.35) {
+      // Watchdog fallback if browser delays ended event (satisfies mobile Safari lock screen)
+      if (isFinite(dur) && dur > 0 && cur >= dur - 0.35) {
         void advanceNextRef.current();
       }
     };
@@ -1321,22 +1030,6 @@ export function useAudioEngine(): AudioEngine {
       const track = currentTrackRef.current;
       if (!track)                  { setPlayerState("error"); return; }
       if (refreshingRef.current)   { return; } // already refreshing
-
-      // If continuous stream failed, mark as failed and fallback immediately to proxy stream
-      if (continuousActiveRef.current) {
-        console.warn("Continuous audio stream failed; falling back to proxy stream playback");
-        continuousActiveRef.current = false;
-        continuousFailedRef.current = true;
-        try {
-          await apiClient.audio.resolve(track.videoId); // warm cache
-          audio.src = getProxyStreamUrl(track.videoId);
-          setPlayerState("playing");
-          await audio.play();
-          return;
-        } catch {
-          // continue to retry flow below
-        }
-      }
 
       const savedTime  = audio.currentTime;
       const wasPlaying = !audio.paused;

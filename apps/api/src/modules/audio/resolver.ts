@@ -43,6 +43,8 @@
 // ============================================
 
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { resolve as pathResolve } from 'node:path';
 import { promisify }  from 'node:util';
 import type { AudioResolver, AudioStream } from '@dengarkan/shared';
 import { videoIdSchema } from '@dengarkan/shared';
@@ -261,9 +263,27 @@ class YouTubeAudioResolver implements AudioResolver {
       '--no-warnings',
       '--socket-timeout', '20',
       '-f', FORMAT_SELECTOR,
-      '--',
-      url,
     ];
+
+    // Cookies support: check explicit env var, or local cookies.txt in workspace
+    const configuredCookies = process.env.YT_DLP_COOKIES_PATH || process.env.YTDLP_COOKIES_PATH;
+    const candidates = [
+      configuredCookies,
+      pathResolve(process.cwd(), 'cookies.txt'),
+      pathResolve(process.cwd(), '../../cookies.txt'),
+    ].filter((p): p is string => Boolean(p && existsSync(p)));
+
+    const cookiesBrowser =
+      process.env.YT_DLP_COOKIES_FROM_BROWSER ||
+      process.env.YTDLP_COOKIES_FROM_BROWSER;
+
+    if (candidates.length > 0) {
+      args.push('--cookies', candidates[0]);
+    } else if (cookiesBrowser) {
+      args.push('--cookies-from-browser', cookiesBrowser);
+    }
+
+    args.push('--', url);
 
     let stdout: string;
     let stderr: string;

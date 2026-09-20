@@ -79,6 +79,107 @@ export const audioRoutes: FastifyPluginAsync = async (app) => {
     }
   );
 
+  // ── GET /api/audio/stream/:videoId ────────────────────────────────────────
+  // Server-side proxy for CDN audio stream.
+  // YouTube CDN URLs are IP-bound to the server — clients on other IPs (LAN,
+  // mobile devices) get 403 if they try to access the CDN URL directly.
+  // This endpoint resolves the stream, then proxies the CDN response through
+  // the server so any authenticated client can play audio without IP issues.
+  // Supports Range requests for seeking.
+
+  app.get(
+    '/api/audio/stream/:videoId',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const params = request.params as { videoId?: string };
+      const parsed = videoIdSchema.safeParse(params.videoId);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: 'Bad Request', message: 'Invalid YouTube video ID', statusCode: 400,
+        });
+      }
+
+      let stream;
+      try {
+        stream = await audioResolver.resolve(parsed.data);
+      } catch (err) {
+        return sendResolverError(err, reply, request.log);
+      }
+
+      const rangeHeader = request.headers['range'];
+      const fetchHeaders: Record<string, string> = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.youtube.com/',
+      };
+      if (rangeHeader) fetchHeaders['Range'] = rangeHeader;
+
+      let cdnRes: Response;
+      try {
+        cdnRes = await fetch(stream.streamUrl, { headers: fetchHeaders });
+      } catch (err) {
+        request.log.error({ err }, 'Failed to fetch CDN stream');
+        return reply.status(502).send({
+          error: 'STREAM_PROXY_ERROR',
+          message: 'Failed to fetch audio from CDN',
+          statusCode: 502,
+        });
+      }
+
+      if (!cdnRes.ok && cdnRes.status !== 206) {
+        // CDN URL expired — evict cache and tell client to retry
+        void audioResolver.invalidate(parsed.data);
+        return reply.status(503).send({
+          error: 'STREAM_EXPIRED',
+          message: 'Audio stream expired, please retry',
+          statusCode: 503,
+        });
+      }
+
+      reply.status(cdnRes.status);
+      reply.header('Content-Type', cdnRes.headers.get('Content-Type') || stream.mimeType);
+      reply.header('Cache-Control', 'no-cache');
+      reply.header('Access-Control-Allow-Origin', '*');
+      const contentLength = cdnRes.headers.get('Content-Length');
+      if (contentLength) reply.header('Content-Length', contentLength);
+      const contentRange = cdnRes.headers.get('Content-Range');
+      if (contentRange) reply.header('Content-Range', contentRange);
+      reply.header('Accept-Ranges', 'bytes');
+
+      if (!cdnRes.body) {
+        return reply.send(Buffer.alloc(0));
+      }
+
+      // Stream body chunks directly to client
+      const reader = cdnRes.body.getReader();
+      const rawReply = reply.raw;
+      reply.hijack();
+      rawReply.writeHead(cdnRes.status, {
+        'Content-Type': cdnRes.headers.get('Content-Type') || stream.mimeType,
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Accept-Ranges': 'bytes',
+        ...(contentLength ? { 'Content-Length': contentLength } : {}),
+        ...(contentRange ? { 'Content-Range': contentRange } : {}),
+      });
+
+      request.raw.on('close', () => reader.cancel().catch(() => {}));
+      request.raw.on('aborted', () => reader.cancel().catch(() => {}));
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || rawReply.destroyed || rawReply.writableEnded) break;
+          rawReply.write(value);
+        }
+      } catch {
+        // client disconnected
+      } finally {
+        reader.cancel().catch(() => {});
+        if (!rawReply.destroyed && !rawReply.writableEnded) rawReply.end();
+      }
+    }
+  );
+
   // ── POST /api/audio/refresh ────────────────────────────────────────────────
   // Force-refresh: evicts both caches and calls yt-dlp fresh.
   // Frontend calls this when it receives an HTTP 403 on the stream URL.

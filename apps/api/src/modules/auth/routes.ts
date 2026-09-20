@@ -49,10 +49,20 @@ export interface AuthRouteOptions {
 
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60; // 7 days (seconds)
 
+function isSecureContext(): boolean {
+  // Secure cookies when explicitly in production mode OR when SECURE_COOKIES is set.
+  // SECURE_COOKIES=true allows deployments that don't set NODE_ENV=production to still
+  // get the Secure flag (e.g. behind a reverse proxy serving HTTPS).
+  return (
+    process.env.NODE_ENV === 'production' ||
+    process.env.SECURE_COOKIES === 'true'
+  );
+}
+
 function cookieOptions() {
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: isSecureContext(),
     sameSite: 'lax' as const,
     path: '/',
     maxAge: SESSION_MAX_AGE,
@@ -156,7 +166,7 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (
         path: '/',
         httpOnly: true,
         sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
+        secure: isSecureContext(),
       });
       return reply.status(200).send({ message: 'Logged out successfully' });
     }

@@ -21,6 +21,9 @@ export interface ContinuousTrack {
   artist?: string;
 }
 
+/** Same regex as videoIdSchema in @dengarkan/shared — /^[A-Za-z0-9_-]{11}$/ */
+const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
 /**
  * Parses track query parameter into an array of ContinuousTrack items.
  * Supports JSON string or "id:dur:title:artist,id2:dur2..." format.
@@ -31,7 +34,15 @@ export function parseContinuousTracks(raw: string | undefined): ContinuousTrack[
   if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
     try {
       const parsed = JSON.parse(trimmed);
-      return Array.isArray(parsed) ? parsed : [parsed];
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      // Filter to well-formed track objects with valid YouTube video IDs
+      return items.filter(
+        (t): t is ContinuousTrack =>
+          t !== null &&
+          typeof t === 'object' &&
+          typeof t.videoId === 'string' &&
+          VIDEO_ID_RE.test(t.videoId)
+      );
     } catch {
       // fallback to comma separated format
     }
@@ -42,7 +53,7 @@ export function parseContinuousTracks(raw: string | undefined): ContinuousTrack[
   for (const item of items) {
     const parts = item.split(':');
     const videoId = parts[0]?.trim();
-    if (videoId && videoId.length === 11) {
+    if (videoId && VIDEO_ID_RE.test(videoId)) {
       const durationSeconds = parseFloat(parts[1] || '180') || 180;
       const title = parts[2] ? decodeURIComponent(parts[2]) : undefined;
       const artist = parts[3] ? decodeURIComponent(parts[3]) : undefined;

@@ -69,6 +69,18 @@ interface CachedStreamEntry {
 const clientStreamCache = new Map<string, CachedStreamEntry>();
 const inFlightStreamFetches = new Map<string, Promise<AudioStream>>();
 
+/**
+ * Returns the server-side proxy URL for a video stream.
+ * Using the proxy instead of the raw CDN URL is essential for LAN/mobile clients:
+ * YouTube CDN URLs contain an `ip=` parameter bound to the server's IP address.
+ * Any client with a different IP (phone, other laptop on LAN) gets a 403 from the CDN.
+ * The proxy endpoint (/api/audio/stream/:videoId) fetches from CDN server-side
+ * so the correct IP is always used, then streams the bytes to any authenticated client.
+ */
+export function getProxyStreamUrl(videoId: string): string {
+  return `/api/audio/stream/${encodeURIComponent(videoId)}`;
+}
+
 export function getCachedStream(videoId: string): AudioStream | null {
   const entry = clientStreamCache.get(videoId);
   if (!entry) return null;
@@ -608,7 +620,7 @@ export function useAudioEngine(): AudioEngine {
       if (audio) {
         isKeepAliveRef.current = false;
         audio.loop = false;
-        audio.src = cachedStream.streamUrl;
+        audio.src = getProxyStreamUrl(cachedStream.videoId);
         try {
           if (audio.readyState > 0 && audio.currentTime !== 0) {
             audio.currentTime = 0;
@@ -636,7 +648,7 @@ export function useAudioEngine(): AudioEngine {
       if (!audio) return;
       isKeepAliveRef.current = false;
       audio.loop = false;
-      audio.src = stream.streamUrl;
+      audio.src = getProxyStreamUrl(stream.videoId);
       try {
         if (audio.readyState > 0 && audio.currentTime !== 0) {
           audio.currentTime = 0;
@@ -1310,15 +1322,14 @@ export function useAudioEngine(): AudioEngine {
       if (!track)                  { setPlayerState("error"); return; }
       if (refreshingRef.current)   { return; } // already refreshing
 
-      // If continuous stream failed, mark as failed and fallback immediately to direct stream
+      // If continuous stream failed, mark as failed and fallback immediately to proxy stream
       if (continuousActiveRef.current) {
-        console.warn("Continuous audio stream failed; falling back to direct stream playback");
+        console.warn("Continuous audio stream failed; falling back to proxy stream playback");
         continuousActiveRef.current = false;
         continuousFailedRef.current = true;
         try {
-          const fresh = await apiClient.audio.resolve(track.videoId);
-          setCurrentStream(fresh);
-          audio.src = fresh.streamUrl;
+          await apiClient.audio.resolve(track.videoId); // warm cache
+          audio.src = getProxyStreamUrl(track.videoId);
           setPlayerState("playing");
           await audio.play();
           return;
@@ -1348,7 +1359,7 @@ export function useAudioEngine(): AudioEngine {
 
           const fresh = await apiClient.audio.refresh(track.videoId);
           setCurrentStream(fresh);
-          audio.src = fresh.streamUrl;
+          audio.src = getProxyStreamUrl(track.videoId);
           audio.currentTime = savedTime;
 
           if (wasPlaying) {

@@ -33,21 +33,39 @@ export function SearchView() {
   const [isLoading,   setIsLoading]   = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [justAdded,   setJustAdded]   = useState<string | null>(null);
+  const [error,       setError]       = useState<string | null>(null);
 
+  const latestQueryRef = React.useRef("");
   const { currentTrack, isPlaying, playTrack, addToQueue, next, playerState } = usePlayer();
 
   const runSearch = useCallback(async (q: string) => {
     const trimmed = q.trim();
-    if (!trimmed) { setResults([]); setHasSearched(false); return; }
+    if (!trimmed) {
+      latestQueryRef.current = "";
+      setResults([]);
+      setHasSearched(false);
+      setError(null);
+      return;
+    }
+    latestQueryRef.current = trimmed;
     setIsLoading(true);
     setHasSearched(true);
+    setError(null);
     try {
       const res = await apiClient.youtube.search(trimmed);
-      setResults(res.results ?? []);
+      if (latestQueryRef.current === trimmed) {
+        setResults(res.results ?? []);
+        setError(null);
+      }
     } catch {
-      setResults([]);
+      if (latestQueryRef.current === trimmed) {
+        setResults([]);
+        setError("Gagal mencari musik. Silakan coba beberapa saat lagi.");
+      }
     } finally {
-      setIsLoading(false);
+      if (latestQueryRef.current === trimmed) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
@@ -93,8 +111,15 @@ export function SearchView() {
           </p>
         </div>
 
-        {/* Search Bar (Centered, thumb friendly) */}
-        <div className="relative mb-3.5 w-full">
+        {/* Search Bar (Centered, thumb friendly, with form submission for mobile keyboards) */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            (document.activeElement as HTMLElement)?.blur();
+            void runSearch(query);
+          }}
+          className="relative mb-3.5 w-full"
+        >
           <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#8E8E93]">
             <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
@@ -106,15 +131,15 @@ export function SearchView() {
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
-              if (!e.target.value.trim()) { setResults([]); setHasSearched(false); }
+              if (!e.target.value.trim()) { setResults([]); setHasSearched(false); setError(null); }
             }}
-            onKeyDown={(e) => e.key === "Enter" && runSearch(query)}
             placeholder="Cari lagu, podcast, kesukaanmu…"
             className="w-full pl-11 pr-11 py-3.5 rounded-2xl bg-[#161619] border border-white/10 text-sm text-white placeholder-[#8E8E93] focus:outline-none focus:border-[#39FF14] focus:ring-1 focus:ring-[#39FF14]/30 transition-default min-h-[48px]"
           />
           {query && (
             <button
-              onClick={() => { setQuery(""); setResults([]); setHasSearched(false); }}
+              type="button"
+              onClick={() => { setQuery(""); setResults([]); setHasSearched(false); setError(null); }}
               className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-[#8E8E93] hover:text-white transition-default cursor-pointer"
               aria-label="Hapus teks pencarian"
             >
@@ -123,7 +148,7 @@ export function SearchView() {
               </svg>
             </button>
           )}
-        </div>
+        </form>
 
         {/* Quick Search Chips (Centered) */}
         {!hasSearched && (
@@ -253,8 +278,31 @@ export function SearchView() {
         </div>
       )}
 
+      {/* Error State */}
+      {!isLoading && error && (
+        <div className="text-center py-14">
+          <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-3 text-red-400">
+            <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+          </div>
+          <p className="text-sm font-semibold text-white">{error}</p>
+          <button
+            onClick={() => runSearch(query)}
+            className="mt-3.5 px-4 py-2 text-xs font-semibold rounded-xl bg-[#222226] hover:bg-[#2c2c32] text-white border border-white/10 transition-default cursor-pointer min-h-[40px] inline-flex items-center gap-1.5"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+            </svg>
+            Coba Lagi
+          </button>
+        </div>
+      )}
+
       {/* Empty State */}
-      {!isLoading && hasSearched && results.length === 0 && (
+      {!isLoading && !error && hasSearched && results.length === 0 && (
         <div className="text-center py-16">
           <div className="w-12 h-12 rounded-2xl bg-[#161619] border border-white/5 flex items-center justify-center mx-auto mb-3 text-[#8E8E93]">
             <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

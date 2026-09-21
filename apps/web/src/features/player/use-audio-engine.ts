@@ -642,16 +642,6 @@ export function useAudioEngine(): AudioEngine {
   // Synchronous direct track load: sets audio.src and initiates play in the exact same tick
   // to satisfy mobile browsers (Safari iOS lock screen background playback)
   const directLoadTrack = useCallback(async (track: PlayableTrack, overrideSequence?: PlayableTrack[], startOffsetSeconds?: number): Promise<void> => {
-    // ── iOS/mobile WebKit: drive playback via the continuous stream instead ──
-    // of swapping audio.src per track (see block comment near the top of file).
-    if (isIosOrMobileWebKit()) {
-      const rest = overrideSequence
-        ? overrideSequence.filter((t) => t.videoId !== track.videoId)
-        : queueStateRef.current.queue;
-      openContinuousSession([track, ...rest], startOffsetSeconds);
-      return;
-    }
-
     currentTrackRef.current = track;
     setCurrentTrack(track);
 

@@ -124,10 +124,16 @@ export async function streamContinuousQueue(
   repeatMode?: 'none' | 'one' | 'all'
 ): Promise<void> {
   if (!isFfmpegAvailable()) {
-    request.log.error('FFmpeg binary is not available on this server');
+    let errorDetail = '';
+    try {
+      getFfmpegPath();
+    } catch (e) {
+      errorDetail = e instanceof Error ? e.message : String(e);
+    }
+    request.log.error({ errorDetail }, 'FFmpeg binary is not available on this server');
     return reply.status(503).send({
       error: 'MEDIA_PROCESSOR_UNAVAILABLE',
-      message: 'FFmpeg is not available on this server. Please install ffmpeg or set FFMPEG_PATH.',
+      message: `FFmpeg is not available on this server. ${errorDetail}`,
       statusCode: 503,
     });
   }
@@ -236,7 +242,7 @@ export async function streamContinuousQueue(
 
     ffmpegArgs.push(
       '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      '-headers', 'Referer: https://www.youtube.com/\r\n',
+      '-headers', 'Referer: https://www.youtube.com/\r\n\r\n',
       '-fflags', 'nobuffer',
       '-probesize', '32k',
       '-analyzeduration', '0',
@@ -317,6 +323,7 @@ export async function streamContinuousQueue(
   }
 
   if (!headersSent && !rawRes.destroyed && !rawRes.writableEnded) {
+    request.log.error({ sid, currentIndex: session.currentIndex, trackCount: session.tracks.length }, 'Continuous stream ended before audio headers could be sent');
     rawRes.writeHead(503, { 'Content-Type': 'application/json' });
     rawRes.end(JSON.stringify({
       error: 'STREAM_UNAVAILABLE',

@@ -454,6 +454,7 @@ export function useAudioEngine(): AudioEngine {
   // audio.currentTime (cumulative, never resets between tracks) back to
   // "which track is logically playing right now".
   const continuousQueueRef     = useRef<PlayableTrack[]>([]);
+  const continuousFailCountRef = useRef(0);
   const lastAdvanceTimeRef = useRef(0);
   const advanceNextRef   = useRef<() => Promise<void>>(() => Promise.resolve());
 
@@ -1293,6 +1294,7 @@ export function useAudioEngine(): AudioEngine {
       setTimeout(() => {
         isAdvancingRef.current = false;
       }, 1000);
+      continuousFailCountRef.current = 0;
       if (isKeepAliveRef.current) return;
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const dur = getCanonicalDuration(meta, audio.duration);
@@ -1472,6 +1474,20 @@ export function useAudioEngine(): AudioEngine {
       if (refreshingRef.current)   { return; } // already refreshing
 
       if (continuousModeRef.current) {
+        continuousFailCountRef.current++;
+        if (continuousFailCountRef.current > 1) {
+          // Continuous streaming failed (e.g. backend 503 / FFmpeg issue).
+          // Fall back gracefully to direct proxy streaming so the user never gets stuck!
+          console.warn("[CONTINUOUS] Continuous stream failed, falling back to direct proxy streaming");
+          continuousModeRef.current = false;
+          continuousSessionIdRef.current = null;
+          continuousQueueRef.current = [];
+          setPlayerState("loading");
+          audio.src = getProxyStreamUrl(track.videoId);
+          void audio.play().catch((e) => console.warn("Direct stream playback error:", e));
+          return;
+        }
+
         // The per-track CDN-refresh dance below doesn't apply to a chunked
         // continuous stream — just reopen a fresh session at roughly the
         // same point in the current track and let it resolve on its own.

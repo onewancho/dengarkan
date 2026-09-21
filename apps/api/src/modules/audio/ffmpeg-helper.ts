@@ -27,6 +27,10 @@ function testFfmpegExecutable(binPath: string): boolean {
       timeout: 3000,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    if (res.error) {
+      lastFfmpegError = res.error.message;
+      return false;
+    }
     return res.status === 0;
   } catch (e) {
     lastFfmpegError = e instanceof Error ? e.message : String(e);
@@ -68,7 +72,38 @@ export function getFfmpegPath(): string {
     }
   }
 
-  // 2. Check ffmpeg-static path
+  // 2. Check system ffmpeg binaries and `which ffmpeg` (fastest & preferred on Linux VPS / Ubuntu)
+  const candidates = [
+    '/usr/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+    'ffmpeg',
+    '/bin/ffmpeg',
+    '/snap/bin/ffmpeg',
+    '/opt/homebrew/bin/ffmpeg',
+    '/usr/pkg/bin/ffmpeg',
+  ];
+
+  for (const candidate of candidates) {
+    if (testFfmpegExecutable(candidate)) {
+      cachedWorkingFfmpeg = candidate;
+      return cachedWorkingFfmpeg;
+    }
+  }
+
+  try {
+    const whichRes = spawnSync('which', ['ffmpeg'], { encoding: 'utf8', timeout: 2000 });
+    if (whichRes.status === 0 && whichRes.stdout) {
+      const p = whichRes.stdout.trim();
+      if (p && testFfmpegExecutable(p)) {
+        cachedWorkingFfmpeg = p;
+        return cachedWorkingFfmpeg;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3. Fallback to bundled ffmpeg-static package
   if (ffmpegStaticPath && typeof ffmpegStaticPath === 'string') {
     if (fs.existsSync(ffmpegStaticPath)) {
       ensureExecutable(ffmpegStaticPath);
@@ -95,24 +130,8 @@ export function getFfmpegPath(): string {
           }
         }
       } catch {
-        // Fallback to system search below
+        // Fallback to error below
       }
-    }
-  }
-
-  // 3. Check system ffmpeg
-  const candidates = [
-    'ffmpeg',
-    '/usr/bin/ffmpeg',
-    '/usr/local/bin/ffmpeg',
-    '/opt/homebrew/bin/ffmpeg',
-    '/usr/pkg/bin/ffmpeg',
-  ];
-
-  for (const candidate of candidates) {
-    if (testFfmpegExecutable(candidate)) {
-      cachedWorkingFfmpeg = candidate;
-      return cachedWorkingFfmpeg;
     }
   }
 

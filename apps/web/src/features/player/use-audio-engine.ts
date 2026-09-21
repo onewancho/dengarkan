@@ -50,6 +50,27 @@ import type { PlayerState, AudioStream, SearchResult, QueueTrack } from "@dengar
 import { apiClient } from "@/services/api-client";
 import { useMediaSession, buildArtwork, safeSetPositionState } from "./use-media-session";
 import { parseTrackMeta } from "@/lib/track-meta";
+import {
+  isIosOrMobileWebKit,
+  buildContinuousStreamUrl,
+  mapContinuousTimeToTrack,
+  generateContinuousSessionId,
+} from "./continuous-player";
+
+// ── Continuous stream mode (iOS/mobile WebKit only) ─────────────────────────
+// On iOS Safari, changing audio.src while the screen is locked / app is
+// backgrounded reliably stalls (WebKit bug 173332-style background socket
+// suspension) even though audio.play() itself is called synchronously.
+// repeat=one works because it never opens a new network resource — it just
+// seeks the SAME already-buffered element back to 0.
+//
+// Fix: on iOS/mobile WebKit, drive playback through the backend's single
+// continuous chunked stream (/api/audio/continuous) instead of swapping
+// audio.src per track. audio.src is set ONCE per "session" (a run of tracks
+// starting from a user-initiated action) and never changes again for natural
+// forward progression — the server-side ffmpeg pipeline advances through the
+// queue on its own, so there is no new network resource for iOS to suspend.
+// See ./continuous-player.ts for the URL/time-mapping helpers.
 
 // ── Client Stream Cache ───────────────────────────────────────────────────────
 // In-memory cache for resolved stream URLs so track transitions (especially
@@ -424,6 +445,15 @@ export function useAudioEngine(): AudioEngine {
   const refreshingRef    = useRef(false);
   const isAdvancingRef   = useRef(false);
   const isKeepAliveRef   = useRef(false);
+
+  // Continuous-mode state (iOS/mobile WebKit only — see block comment above).
+  const continuousModeRef      = useRef(false);
+  const continuousSessionIdRef = useRef<string | null>(null);
+  // The exact ordered track list the currently-open continuous session was
+  // built with (index 0 = whatever the session started on). Used to map
+  // audio.currentTime (cumulative, never resets between tracks) back to
+  // "which track is logically playing right now".
+  const continuousQueueRef     = useRef<PlayableTrack[]>([]);
   const lastAdvanceTimeRef = useRef(0);
   const advanceNextRef   = useRef<() => Promise<void>>(() => Promise.resolve());
 
@@ -543,9 +573,84 @@ export function useAudioEngine(): AudioEngine {
 
   // ── Core: resolve stream and play ─────────────────────────────────────────
 
+  // Opens (or re-opens) a continuous chunked stream covering `orderedTracks`,
+  // starting playback on orderedTracks[0]. Only ever called on iOS/mobile
+  // WebKit. audio.src is set exactly once here — natural forward progression
+  // afterwards is handled entirely client-side by the onTimeUpdate boundary
+  // detector below (no further audio.src changes, no new network resource).
+  const openContinuousSession = useCallback((orderedTracks: PlayableTrack[], startOffsetSeconds?: number): void => {
+    if (orderedTracks.length === 0) return;
+    const track = orderedTracks[0];
+    const audio = audioRef.current;
+
+    const sessionId = generateContinuousSessionId();
+    continuousSessionIdRef.current = sessionId;
+    continuousQueueRef.current     = orderedTracks;
+    continuousModeRef.current      = true;
+
+    currentTrackRef.current = track;
+    setCurrentTrack(track);
+    const initialDuration = track.durationSeconds || 0;
+    setDuration(initialDuration);
+
+    if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+      try {
+        const meta = parseTrackMeta(track.title, track.channelName, initialDuration);
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title:   meta.title,
+          artist:  meta.artist,
+          album:   meta.channelName || "Dengarkan",
+          artwork: buildArtwork(track.thumbnailUrl),
+        });
+        navigator.mediaSession.playbackState = "playing";
+        if (initialDuration > 0 && audio) {
+          safeSetPositionState(audio, initialDuration, startOffsetSeconds || 0);
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (!audio) return;
+
+    isKeepAliveRef.current = false;
+    // Looping/repeating is handled server-side for continuous sessions —
+    // native audio.loop would restart the WHOLE chunked stream from byte 0.
+    audio.loop = false;
+
+    const url = buildContinuousStreamUrl(
+      orderedTracks,
+      0,
+      undefined,
+      sessionId,
+      startOffsetSeconds,
+      repeatModeRef.current
+    );
+
+    console.log(`[CONTINUOUS] Opening session ${sessionId} starting at: ${track.title}`);
+    audio.src = url;
+    setPlayerState("playing");
+    try {
+      const playPromise = audio.play();
+      if (playPromise) void playPromise.catch((e) => {
+        console.warn("Continuous stream play failed:", e);
+      });
+    } catch (e) {
+      console.warn("Continuous stream play threw:", e);
+    }
+  }, []);
+
   // Synchronous direct track load: sets audio.src and initiates play in the exact same tick
   // to satisfy mobile browsers (Safari iOS lock screen background playback)
   const directLoadTrack = useCallback(async (track: PlayableTrack, overrideSequence?: PlayableTrack[], startOffsetSeconds?: number): Promise<void> => {
+    // ── iOS/mobile WebKit: drive playback via the continuous stream instead ──
+    // of swapping audio.src per track (see block comment near the top of file).
+    if (isIosOrMobileWebKit()) {
+      const rest = overrideSequence
+        ? overrideSequence.filter((t) => t.videoId !== track.videoId)
+        : queueStateRef.current.queue;
+      openContinuousSession([track, ...rest], startOffsetSeconds);
+      return;
+    }
+
     currentTrackRef.current = track;
     setCurrentTrack(track);
 
@@ -628,7 +733,7 @@ export function useAudioEngine(): AudioEngine {
           console.warn("Background fetchStreamWithCache failed:", err);
         });
     }
-  }, [fetchStreamWithCache, getCachedStream]);
+  }, [fetchStreamWithCache, getCachedStream, openContinuousSession]);
 
   const loadTrack = useCallback(async (track: PlayableTrack) => {
     await directLoadTrack(track);
@@ -695,12 +800,35 @@ export function useAudioEngine(): AudioEngine {
   const getCurrentTime = useCallback(() => {
     const audio = audioRef.current;
     if (!audio || !isFinite(audio.currentTime)) return 0;
+    if (continuousModeRef.current) {
+      const pos = mapContinuousTimeToTrack(continuousQueueRef.current, audio.currentTime, repeatModeRef.current);
+      return pos?.trackTime ?? 0;
+    }
     return audio.currentTime;
   }, []);
 
   const seek = useCallback(async (seconds: number) => {
     const audio = audioRef.current;
     if (!audio || !isFinite(seconds)) return;
+
+    if (continuousModeRef.current) {
+      // A live server-piped chunked stream can't be seeked in place — the
+      // only way to land on an arbitrary offset is to reopen the session
+      // starting at the current track with that offset. This is a
+      // user-initiated, foreground action (dragging the seek bar), so a
+      // fresh network resource here is fine — it's not the background
+      // auto-advance case the continuous mode exists to protect.
+      const track = currentTrackRef.current;
+      if (!track) return;
+      const dur = track.durationSeconds || 0;
+      if (isFinite(dur) && dur > 0 && seconds >= dur - 0.5) {
+        void advanceNextRef.current();
+        return;
+      }
+      const target = Math.max(0, Math.min(seconds, isFinite(dur) ? dur : seconds));
+      openContinuousSession([track, ...queueStateRef.current.queue], target);
+      return;
+    }
 
     const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
     const dur = getCanonicalDuration(meta, audio.duration);
@@ -723,7 +851,7 @@ export function useAudioEngine(): AudioEngine {
         console.warn("Failed to seek audio:", err);
       }
     }
-  }, []);
+  }, [openContinuousSession]);
 
   const setVolume = useCallback((v: number) => {
     const clamped = Math.max(0, Math.min(1, v));
@@ -748,6 +876,14 @@ export function useAudioEngine(): AudioEngine {
 
   const clear = useCallback(() => {
     isKeepAliveRef.current = false;
+    if (continuousModeRef.current && continuousSessionIdRef.current) {
+      // Best-effort: tell the server to tear down the ffmpeg pipeline instead
+      // of leaving it running until the client just drops the connection.
+      void apiClient.audio.skipContinuous(continuousSessionIdRef.current, continuousQueueRef.current.length).catch(() => {});
+    }
+    continuousModeRef.current = false;
+    continuousSessionIdRef.current = null;
+    continuousQueueRef.current = [];
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
@@ -869,6 +1005,16 @@ export function useAudioEngine(): AudioEngine {
     setRepeatModeState(m);
     repeatModeRef.current = m;
     try { localStorage.setItem(REPEAT_KEY, m); } catch { /* ignore */ }
+
+    if (continuousModeRef.current && continuousSessionIdRef.current) {
+      // Continuous session: repeat is enforced server-side (ffmpeg loop /
+      // wraparound), never via the native `loop` attribute.
+      void apiClient.audio.setContinuousRepeat(continuousSessionIdRef.current, m).catch((e) => {
+        console.warn("Failed to sync repeat mode to continuous session:", e);
+      });
+      return;
+    }
+
     const audio = audioRef.current;
     if (audio) {
       audio.loop = (m === "one");
@@ -891,7 +1037,16 @@ export function useAudioEngine(): AudioEngine {
       const { queue, history } = queueStateRef.current;
 
       // 1. repeat=one → restart current track synchronously (works seamlessly on iOS lock screen)
+      //    In continuous mode the server already handles repeat=one internally
+      //    (it keeps re-streaming session.tracks[0] without advancing), so we
+      //    must NOT manually seek audio.currentTime=0 here — that would seek
+      //    the whole chunked stream's playhead, not just the current track.
+      //    The onTimeUpdate boundary detector below reads the loop back to 0
+      //    for UI purposes. This branch is only reached here if 'ended'/advanceNext
+      //    got called anyway (e.g. as a manual mediaSession trigger) — treat it
+      //    as a no-op in continuous mode and let the stream keep flowing.
       if (repeat === "one" && current) {
+        if (continuousModeRef.current) return;
         if (audio) {
           audio.currentTime = 0;
           try {
@@ -902,6 +1057,59 @@ export function useAudioEngine(): AudioEngine {
           }
         }
         return;
+      }
+
+      // 1b. Continuous mode manual/forced advance (mediaSession "next" button,
+      // in-app skip button, or a fallback if 'ended' fires unexpectedly).
+      // Natural forward progression is NOT handled here — it's detected
+      // client-side by onTimeUpdate without ever calling advanceNext, so the
+      // audio connection is never touched. This branch only runs for a
+      // deliberate "jump ahead" — it asks the server to skip via a small POST
+      // (no audio.src change, so it stands a much better chance of completing
+      // even while the screen is locked than opening a new streamed resource).
+      if (continuousModeRef.current && continuousSessionIdRef.current) {
+        const sid = continuousSessionIdRef.current;
+        const curTime = audio?.currentTime ?? 0;
+        const posNow = mapContinuousTimeToTrack(continuousQueueRef.current, curTime, "none");
+        const fromIdx = posNow?.trackIndex ?? 0;
+        const targetIdx = fromIdx + 1;
+
+        if (targetIdx < continuousQueueRef.current.length) {
+          const nextTrack = continuousQueueRef.current[targetIdx];
+          void apiClient.audio.skipContinuous(sid, targetIdx).catch((e) => {
+            console.warn("Continuous skip request failed:", e);
+          });
+
+          dispatchQueue({
+            type: "ADVANCE_NEXT",
+            current,
+            shuffleOn,
+            repeatMode: repeat,
+            chosenIndex: 0,
+            nextTrack,
+            newQueue: queue.slice(1),
+          });
+
+          currentTrackRef.current = nextTrack;
+          setCurrentTrack(nextTrack);
+          setDuration(nextTrack.durationSeconds || 0);
+          if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+            try {
+              const meta = parseTrackMeta(nextTrack.title, nextTrack.channelName, nextTrack.durationSeconds || 0);
+              navigator.mediaSession.metadata = new MediaMetadata({
+                title:   meta.title,
+                artist:  meta.artist,
+                album:   meta.channelName || "Dengarkan",
+                artwork: buildArtwork(nextTrack.thumbnailUrl),
+              });
+            } catch { /* ignore */ }
+          }
+          return;
+        }
+
+        // Requested track isn't part of the currently open session (queue ran
+        // out, or the app queue diverged from the session) — fall through to
+        // opening a fresh session below, same as a discontinuous jump.
       }
 
       // 2. Normal queue advancement or shuffle from existing queue:
@@ -989,10 +1197,23 @@ export function useAudioEngine(): AudioEngine {
 
   const advancePrev = useCallback(async () => {
     const audio = audioRef.current;
-    const cur = getCurrentTime();
+    // audio.currentTime is cumulative across the whole session in continuous
+    // mode — map it back to "seconds into the CURRENT track" for the
+    // restart-vs-go-back threshold below to mean the same thing it does
+    // outside continuous mode.
+    const cur = continuousModeRef.current
+      ? (mapContinuousTimeToTrack(continuousQueueRef.current, audio?.currentTime ?? 0, "none")?.trackTime ?? 0)
+      : getCurrentTime();
 
     // If >3s played, restart rather than go back
     if (cur > 3) {
+      if (continuousModeRef.current) {
+        // Can't rewind just the current track on a live chunked stream —
+        // reopen a fresh session starting at the same track, from 0.
+        const track = currentTrackRef.current;
+        if (track) openContinuousSession([track, ...queueStateRef.current.queue]);
+        return;
+      }
       if (audio) {
         audio.currentTime = 0;
         try {
@@ -1013,7 +1234,7 @@ export function useAudioEngine(): AudioEngine {
 
     dispatchQueue({ type: "ADVANCE_PREV", current });
     await directLoadTrack(prevTrack);
-  }, [directLoadTrack, getCurrentTime]);
+  }, [directLoadTrack, getCurrentTime, openContinuousSession]);
 
   const playTrackAtIndex = useCallback(async (index: number) => {
     const all = allTracksRef.current;
@@ -1085,6 +1306,13 @@ export function useAudioEngine(): AudioEngine {
       console.log(`[MEDIA EVENT] PAUSE | Time: ${audio.currentTime.toFixed(1)}s / ${dur.toFixed(1)}s | Paused: true`);
       if (isKeepAliveRef.current || isAdvancingRef.current) return;
 
+      // In continuous mode, audio.currentTime is cumulative across the WHOLE
+      // chunked stream (never resets between tracks), so comparing it against
+      // a single track's duration here would misfire near the end of every
+      // track in the session. onTimeUpdate's dedicated continuous-mode branch
+      // owns end-of-track/end-of-session detection instead.
+      if (continuousModeRef.current) return;
+
       // Safari/WebKit always fires 'pause' right before 'ended' at the end of the track.
       // (As verified in Mac Web Inspector on iOS: PAUSE at 246.7s / 246.7s right before ENDED).
       // If we set playerState to 'paused' here, MediaSession tells iOS lock screen that
@@ -1121,6 +1349,10 @@ export function useAudioEngine(): AudioEngine {
 
     const onLoadedMetadata = () => {
       if (isKeepAliveRef.current) return;
+      // Continuous mode: duration is tracked per logical track by the
+      // onTimeUpdate boundary detector, not by the stream's own (chunked,
+      // often unknown/Infinity) audio.duration.
+      if (continuousModeRef.current) return;
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const canonical = getCanonicalDuration(meta, audio.duration);
       if (canonical > 0) setDuration(canonical);
@@ -1128,6 +1360,7 @@ export function useAudioEngine(): AudioEngine {
 
     const onDurationChange = () => {
       if (isKeepAliveRef.current) return;
+      if (continuousModeRef.current) return;
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const canonical = getCanonicalDuration(meta, audio.duration);
       if (canonical > 0) setDuration(canonical);
@@ -1143,12 +1376,77 @@ export function useAudioEngine(): AudioEngine {
       const dur = getCanonicalDuration(meta, audio.duration);
       console.log(`[MEDIA EVENT] ENDED | Time: ${audio.currentTime.toFixed(1)}s / ${dur.toFixed(1)}s | Paused: true`);
       if (isKeepAliveRef.current) return;
+      // The continuous chunked stream only fires 'ended' when the WHOLE
+      // session's HTTP response finishes (repeat='none' reaching the last
+      // track, or the connection was closed) — never on an internal track
+      // boundary (those are handled by onTimeUpdate below without touching
+      // audio at all). So by the time 'ended' fires here, the session is
+      // genuinely over — clear continuous state and let advanceNext's normal
+      // "queue is empty" branch put the player back to idle.
+      if (continuousModeRef.current) {
+        continuousModeRef.current = false;
+        continuousSessionIdRef.current = null;
+        continuousQueueRef.current = [];
+      }
       void advanceNextRef.current();
     };
 
     const onTimeUpdate = () => {
       if (isKeepAliveRef.current || isAdvancingRef.current) return;
       const cur = audio.currentTime;
+
+      // ── Continuous mode: detect crossing into the next logical track ────
+      // audio.currentTime is cumulative across the whole session and never
+      // resets between tracks, so we map it back to "which track is playing
+      // right now" and sync local UI state (currentTrack, duration,
+      // mediaSession, queue/history) purely client-side — no audio.src
+      // change, no network call, so nothing here can be blocked by iOS
+      // background restrictions.
+      if (continuousModeRef.current) {
+        const pos = mapContinuousTimeToTrack(continuousQueueRef.current, cur, repeatModeRef.current);
+        if (!pos) return;
+
+        if (pos.track.videoId !== currentTrackRef.current?.videoId) {
+          const current = currentTrackRef.current;
+          const { queue } = queueStateRef.current;
+
+          console.log(`[CONTINUOUS] Track boundary crossed → ${pos.track.title}`);
+
+          currentTrackRef.current = pos.track;
+          setCurrentTrack(pos.track);
+          setDuration(pos.trackDuration);
+
+          dispatchQueue({
+            type: "ADVANCE_NEXT",
+            current,
+            shuffleOn: shuffleOnRef.current,
+            repeatMode: repeatModeRef.current,
+            chosenIndex: 0,
+            nextTrack: pos.track,
+            newQueue: queue.length > 0 ? queue.slice(1) : queue,
+          });
+
+          if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+            try {
+              const meta = parseTrackMeta(pos.track.title, pos.track.channelName, pos.trackDuration);
+              navigator.mediaSession.metadata = new MediaMetadata({
+                title:   meta.title,
+                artist:  meta.artist,
+                album:   meta.channelName || "Dengarkan",
+                artwork: buildArtwork(pos.track.thumbnailUrl),
+              });
+              safeSetPositionState(audio, pos.trackDuration, pos.trackTime);
+            } catch { /* ignore */ }
+          }
+        } else {
+          // Same track — just keep the lock-screen position indicator honest.
+          if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+            try { safeSetPositionState(audio, pos.trackDuration, pos.trackTime); } catch { /* ignore */ }
+          }
+        }
+        return;
+      }
+
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const canonicalDur = getCanonicalDuration(meta, audio.duration);
 
@@ -1172,6 +1470,18 @@ export function useAudioEngine(): AudioEngine {
       const track = currentTrackRef.current;
       if (!track)                  { setPlayerState("error"); return; }
       if (refreshingRef.current)   { return; } // already refreshing
+
+      if (continuousModeRef.current) {
+        // The per-track CDN-refresh dance below doesn't apply to a chunked
+        // continuous stream — just reopen a fresh session at roughly the
+        // same point in the current track and let it resolve on its own.
+        const pos = mapContinuousTimeToTrack(continuousQueueRef.current, audio.currentTime, repeatModeRef.current);
+        const offset = pos?.trackTime;
+        continuousModeRef.current = false;
+        setPlayerState("refreshing");
+        openContinuousSession([track, ...queueStateRef.current.queue], offset && offset > 0 ? offset : undefined);
+        return;
+      }
 
       const savedTime  = audio.currentTime;
       const wasPlaying = !audio.paused;
@@ -1247,7 +1557,7 @@ export function useAudioEngine(): AudioEngine {
       audio.removeEventListener("ended",          onEnded);
       audio.removeEventListener("error",          onError);
     };
-  }, []); // Run once — all handlers read from refs, not state
+  }, [openContinuousSession]); // Run once — all handlers read from refs, not state
 
   // ── Media Session (Lock Screen / AirPods / Bluetooth) ─────────────────────
   // Delegated to useMediaSession — see use-media-session.ts for full
@@ -1265,8 +1575,6 @@ export function useAudioEngine(): AudioEngine {
     onSeek:     seek,
     getCurrentTime,
   });
-
-
 
   const isPlaying = playerState === "playing" || playerState === "buffering";
 

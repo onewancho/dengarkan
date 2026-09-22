@@ -378,6 +378,8 @@ export function useAudioEngine(): AudioEngine {
   const audioRef = useRef<HTMLAudioElement | null>(null); // Public ref: always points to active audio element
   const standbyPreloadedTrackRef = useRef<{ videoId: string; url: string } | null>(null);
   const standbyUnlockedRef = useRef(false);
+  const isAutoAdvancingRef = useRef(false);
+  const repeatCycleRef = useRef<PlayableTrack[] | null>(null);
 
   const [currentTrack,  setCurrentTrack]  = useState<PlayableTrack | null>(null);
   const [currentStream, setCurrentStream] = useState<AudioStream   | null>(null);
@@ -515,8 +517,23 @@ export function useAudioEngine(): AudioEngine {
       if (queue.length > 0) {
         candidate = queue[0];
       } else if (repeatModeRef.current === "all") {
-        const full = [...history].reverse();
-        if (full.length > 0) candidate = full[0];
+        if (repeatCycleRef.current && repeatCycleRef.current.length > 0) {
+          candidate = repeatCycleRef.current[0];
+        } else {
+          const cycle = allTracksRef.current.length > 0
+            ? allTracksRef.current
+            : (currentTrackRef.current ? [...[...history].reverse(), currentTrackRef.current] : [...history].reverse());
+          if (cycle.length > 0) {
+            if (shuffleOnRef.current && cycle.length > 1) {
+              const shuffled = shuffleArray(cycle, true);
+              candidate = shuffled[0];
+              repeatCycleRef.current = shuffled;
+            } else {
+              candidate = cycle[0];
+              repeatCycleRef.current = cycle;
+            }
+          }
+        }
       }
     }
 
@@ -532,6 +549,7 @@ export function useAudioEngine(): AudioEngine {
     const standby = getStandbyAudio();
     if (!standby) return;
 
+    standby.pause();
     const streamUrl = getProxyStreamUrl(candidate.videoId);
     standby.preload = "auto";
     standby.loop = false;
@@ -544,6 +562,7 @@ export function useAudioEngine(): AudioEngine {
   // Sync standby preload whenever queue or repeatMode changes
   useEffect(() => {
     if (!currentTrack) return;
+    if (isAutoAdvancingRef.current) return;
     syncStandbyPreload();
   }, [currentTrack, queueState.queue, repeatMode, syncStandbyPreload]);
 
@@ -617,6 +636,12 @@ export function useAudioEngine(): AudioEngine {
     setDuration(initialDuration);
 
     const audio = getActiveAudio();
+    const standby = getStandbyAudio();
+    if (standby) {
+      standby.pause();
+      standbyPreloadedTrackRef.current = null;
+      repeatCycleRef.current = null;
+    }
 
     if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
       try {
@@ -910,6 +935,7 @@ export function useAudioEngine(): AudioEngine {
   const toggleShuffle = useCallback(() => {
     const nextShuffle = !shuffleOnRef.current;
     shuffleOnRef.current = nextShuffle;
+    repeatCycleRef.current = null;
 
     const { queue, history } = queueStateRef.current;
     if (nextShuffle) {
@@ -979,15 +1005,15 @@ export function useAudioEngine(): AudioEngine {
       let newQueue = queue;
 
       if (queue.length > 0) {
-        if (shuffleOn && queue.length > 1) {
-          chosenIdx = Math.floor(Math.random() * queue.length);
-        }
-        nextTrack = queue[chosenIdx];
-        newQueue = queue.filter((_, i) => i !== chosenIdx);
+        nextTrack = queue[0];
+        newQueue = queue.slice(1);
       } else if (repeat === "all") {
-        let full = current
-          ? [...[...history].reverse(), current]
-          : [...history].reverse();
+        let full = repeatCycleRef.current && repeatCycleRef.current.length > 0
+          ? repeatCycleRef.current
+          : (allTracksRef.current.length > 0
+              ? allTracksRef.current
+              : (current ? [...[...history].reverse(), current] : [...history].reverse()));
+        repeatCycleRef.current = null;
         if (full.length > 0) {
           if (shuffleOn && full.length > 1) {
             full = shuffleArray(full, true);
@@ -1031,13 +1057,15 @@ export function useAudioEngine(): AudioEngine {
         return;
       }
 
+      isAutoAdvancingRef.current = true;
+
       // Dispatch queue advancement
       dispatchQueue({
         type: "ADVANCE_NEXT",
         current,
         shuffleOn,
         repeatMode: repeat,
-        chosenIndex: chosenIdx,
+        chosenIndex: 0,
         nextTrack,
         newQueue,
       });
@@ -1076,7 +1104,12 @@ export function useAudioEngine(): AudioEngine {
         console.log(`[PING-PONG] Switching slot to ${activeAudioSlotRef.current} for: ${nextTrack.title}`);
         setPlayerState("playing");
 
-        // Start playing the new active element first so audio output never drops to 0
+        // Clean up previous active element immediately without tearing down AVPlayer pipeline
+        if (oldActive) {
+          oldActive.pause();
+        }
+
+        // Start playing the new active element
         if (newActive) {
           newActive.loop = (repeat === "one");
           newActive.volume = isFinite(volume) && volume >= 0 && volume <= 1 ? volume : DEFAULT_VOLUME;
@@ -1088,17 +1121,29 @@ export function useAudioEngine(): AudioEngine {
           }
         }
 
-        // Clean up previous active element
-        if (oldActive) {
-          oldActive.pause();
-          oldActive.src = "";
-        }
-
         standbyPreloadedTrackRef.current = null;
-        const upcomingCandidate = newQueue.length > 0
-          ? newQueue[0]
-          : (repeat === "all" ? nextTrack : null);
+        let upcomingCandidate: PlayableTrack | null = null;
+        if (newQueue.length > 0) {
+          upcomingCandidate = newQueue[0];
+        } else if (repeat === "all") {
+          const cycle = allTracksRef.current.length > 0
+            ? allTracksRef.current
+            : [...[...queueStateRef.current.history].reverse(), current, nextTrack].filter(
+                (t): t is PlayableTrack => Boolean(t)
+              );
+          if (cycle.length > 0) {
+            if (shuffleOn && cycle.length > 1) {
+              const shuffledCycle = shuffleArray(cycle, true);
+              upcomingCandidate = shuffledCycle[0];
+              repeatCycleRef.current = shuffledCycle;
+            } else {
+              upcomingCandidate = cycle[0];
+              repeatCycleRef.current = cycle;
+            }
+          }
+        }
         syncStandbyPreload(upcomingCandidate);
+        isAutoAdvancingRef.current = false;
 
         // Fetch stream in background if not in cache to guarantee exact canonical duration
         if (!cachedStream) {

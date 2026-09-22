@@ -1051,7 +1051,12 @@ export function useAudioEngine(): AudioEngine {
         currentTrackRef.current = nextTrack;
         setCurrentTrack(nextTrack);
 
-        const initialDur = nextTrack.durationSeconds || 0;
+        // Synchronize stream cache and duration for nextTrack to prevent stale duration bugs
+        const cachedStream = getCachedStream(nextTrack.videoId);
+        currentStreamRef.current = cachedStream || null;
+        setCurrentStream(cachedStream || null);
+
+        const initialDur = nextTrack.durationSeconds || cachedStream?.durationSeconds || 0;
         setDuration(initialDur);
 
         if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
@@ -1094,6 +1099,23 @@ export function useAudioEngine(): AudioEngine {
           ? newQueue[0]
           : (repeat === "all" ? nextTrack : null);
         syncStandbyPreload(upcomingCandidate);
+
+        // Fetch stream in background if not in cache to guarantee exact canonical duration
+        if (!cachedStream) {
+          void fetchStreamWithCache(nextTrack.videoId)
+            .then((stream) => {
+              if (currentTrackRef.current?.videoId === nextTrack.videoId) {
+                currentStreamRef.current = stream;
+                setCurrentStream(stream);
+                if (stream.durationSeconds && stream.durationSeconds > 0) {
+                  setDuration(stream.durationSeconds);
+                }
+              }
+            })
+            .catch((err) => {
+              console.warn("Background fetchStreamWithCache failed on ping-pong switch:", err);
+            });
+        }
       } else {
         await directLoadTrack(nextTrack);
       }
@@ -1271,14 +1293,17 @@ export function useAudioEngine(): AudioEngine {
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const canonicalDur = getCanonicalDuration(meta, audio.duration);
 
-      // Detect end of real audio content:
+      // Fallback safety watchdog:
+      // The browser's native 'ended' event (onEnded above) is the authoritative, precise trigger.
+      // This watchdog ONLY acts as a safety net if audio reached its full duration AND has stopped/stalled,
+      // never interrupting playback while the track is still actively playing (cur < canonicalDur).
       if (
         isFinite(canonicalDur) &&
         canonicalDur > 5 &&
-        cur >= 5 &&
-        cur >= canonicalDur - 0.5
+        cur >= canonicalDur &&
+        (audio.ended || audio.paused || cur >= canonicalDur + 1.5)
       ) {
-        console.log(`[MEDIA EVENT] REAL END REACHED: ${cur.toFixed(1)}s / ${canonicalDur.toFixed(1)}s`);
+        console.log(`[MEDIA EVENT] SAFETY WATCHDOG FIRED: ${cur.toFixed(1)}s / ${canonicalDur.toFixed(1)}s`);
         void advanceNextRef.current();
       }
     };

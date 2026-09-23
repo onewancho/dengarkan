@@ -12,6 +12,8 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePlaylistContext } from "@/features/playlists/context";
+import { usePlayer } from "@/features/player/context";
+import { apiClient } from "@/services/api-client";
 import type { Playlist } from "@dengarkan/shared";
 
 function CreatePlaylistInline({ onDone }: { onDone: () => void }) {
@@ -107,10 +109,45 @@ function RenameInline({
 export default function PlaylistsPage() {
   const router = useRouter();
   const { playlists, isLoading, deletePlaylist } = usePlaylistContext();
+  const { playPlaylist } = usePlayer();
 
   const [showCreate, setShowCreate] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [loadingPlayId, setLoadingPlayId] = useState<string | null>(null);
+
+  const handlePlayPlaylist = async (pl: Playlist) => {
+    if (pl.trackCount === 0) {
+      alert("Playlist ini masih kosong.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Apakah Anda yakin ingin mengganti antrean saat ini dengan seluruh lagu dari playlist "${pl.name}"?`
+    );
+    if (!confirmed) return;
+
+    setLoadingPlayId(pl.id);
+    try {
+      const detail = await apiClient.playlists.get(pl.id);
+      if (detail.tracks && detail.tracks.length > 0) {
+        await playPlaylist(
+          detail.tracks.map((t) => ({
+            videoId:         t.videoId,
+            title:           t.title,
+            channelName:     t.channelName,
+            thumbnailUrl:    t.thumbnailUrl,
+            durationSeconds: t.durationSeconds,
+          })),
+          0
+        );
+      }
+    } catch (err) {
+      console.error("Gagal memutar playlist:", err);
+    } finally {
+      setLoadingPlayId(null);
+    }
+  };
 
   return (
     <div className="w-full pt-4 pb-36">
@@ -207,6 +244,26 @@ export default function PlaylistsPage() {
                 {/* Actions */}
                 {renamingId !== pl.id && (
                   <div className="flex items-center gap-1 flex-shrink-0">
+                    {/* Putar Seluruh Playlist */}
+                    <button
+                      disabled={loadingPlayId === pl.id || isDeleting}
+                      onClick={() => handlePlayPlaylist(pl)}
+                      className="w-10 h-10 rounded-xl flex items-center justify-center bg-[#39FF14]/15 hover:bg-[#39FF14]/30 active:bg-[#39FF14]/40 text-[#39FF14] transition-default cursor-pointer disabled:opacity-40"
+                      aria-label={`Putar seluruh lagu di playlist ${pl.name}`}
+                      title="Putar playlist"
+                    >
+                      {loadingPlayId === pl.id ? (
+                        <svg className="w-4 h-4 animate-spin text-[#39FF14]" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                      ) : (
+                        <svg className="w-4 h-4 fill-current ml-0.5" viewBox="0 0 24 24">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                      )}
+                    </button>
+
                     <button
                       onClick={() => setRenamingId(pl.id)}
                       className="w-10 h-10 rounded-xl flex items-center justify-center text-[#8E8E93] hover:text-white hover:bg-white/5 transition-default"

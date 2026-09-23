@@ -37,6 +37,119 @@ interface TrackRowProps {
   onAnnounce: (msg: string) => void;
 }
 
+function TrackActionsMenu({
+  track,
+  onPlayNext,
+  onAddToQueue,
+  onRemove,
+  isRemoving,
+}: {
+  track: PlaylistTrack;
+  onPlayNext: () => void;
+  onAddToQueue: () => void;
+  onRemove: () => void;
+  isRemoving: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative flex-shrink-0">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((o) => !o);
+        }}
+        className="w-9 h-9 rounded-xl flex items-center justify-center text-[#8E8E93] hover:text-white hover:bg-white/5 active:bg-white/10 transition-default cursor-pointer"
+        aria-label={`Menu opsi untuk ${track.title}`}
+        title="Opsi lagu"
+      >
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="12" cy="5" r="2" />
+          <circle cx="12" cy="12" r="2" />
+          <circle cx="12" cy="19" r="2" />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          className="absolute right-0 bottom-full mb-1 w-48 rounded-2xl bg-[#161619] border border-white/10 shadow-2xl shadow-black/80 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100"
+          role="menu"
+        >
+          {/* Putar Sekarang */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              onPlayNext();
+            }}
+            className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-xs font-semibold text-white hover:text-[#39FF14] hover:bg-white/5 transition-default cursor-pointer text-left"
+            role="menuitem"
+          >
+            <svg className="w-3.5 h-3.5 fill-current text-[#39FF14]" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+            <span>Putar Sekarang</span>
+          </button>
+
+          {/* Tambah ke Antrean */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              onAddToQueue();
+            }}
+            className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-xs font-semibold text-white hover:text-[#39FF14] hover:bg-white/5 transition-default cursor-pointer text-left"
+            role="menuitem"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            <span>Tambah ke Antrean</span>
+          </button>
+
+          <div className="border-t border-white/5 my-1" />
+
+          {/* Hapus dari Playlist */}
+          <button
+            type="button"
+            disabled={isRemoving}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              onRemove();
+            }}
+            className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-xs font-semibold text-[#FF3B30] hover:bg-[#FF3B30]/10 transition-default cursor-pointer text-left disabled:opacity-40"
+            role="menuitem"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-1 14H6L5 6" />
+              <path d="M10 11v6M14 11v6" />
+            </svg>
+            <span>Hapus dari Playlist</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TrackRow({
   track,
   index,
@@ -54,11 +167,40 @@ function TrackRow({
     currentTrack,
     isPlaying,
     playPlaylist,
+    playTrack,
+    addToQueue,
     toggle,
     playTrackAtIndex,
     allTracks: playerAllTracks,
   } = usePlayer();
   const [isRemoving, setIsRemoving] = useState(false);
+
+  const playable = {
+    videoId:         track.videoId,
+    title:           track.title,
+    channelName:     track.channelName,
+    thumbnailUrl:    track.thumbnailUrl,
+    durationSeconds: track.durationSeconds,
+  };
+
+  const handlePlayNow = () => {
+    void playTrack(playable);
+  };
+
+  const handleAddToQueue = () => {
+    addToQueue(playable);
+  };
+
+  const handleRemove = async () => {
+    setIsRemoving(true);
+    try {
+      await removeTrack(track.id);
+    } catch {
+      // rollback handled in hook
+    } finally {
+      setIsRemoving(false);
+    }
+  };
 
   const isCurrent = currentTrack?.videoId === track.videoId;
 
@@ -280,27 +422,14 @@ function TrackRow({
         </p>
       </button>
 
-      {/* Remove Track Button */}
-      <button
-        disabled={isRemoving}
-        onClick={async () => {
-          setIsRemoving(true);
-          try { await removeTrack(track.id); }
-          catch { /* rollback handled in hook */ }
-          finally { setIsRemoving(false); }
-        }}
-        className="opacity-0 group-hover:opacity-100 p-2 rounded-xl hover:bg-[#FF3B30]/15 text-[#8E8E93] hover:text-[#FF3B30] transition-default disabled:opacity-40 flex-shrink-0 min-h-[36px] cursor-pointer"
-        aria-label="Hapus lagu dari playlist"
-        title="Hapus"
-      >
-        {isRemoving ? (
-          <span className="text-xs">…</span>
-        ) : (
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" />
-          </svg>
-        )}
-      </button>
+      {/* Actions Dropdown Menu */}
+      <TrackActionsMenu
+        track={track}
+        onPlayNext={handlePlayNow}
+        onAddToQueue={handleAddToQueue}
+        onRemove={handleRemove}
+        isRemoving={isRemoving}
+      />
     </div>
   );
 }

@@ -379,6 +379,7 @@ export function useAudioEngine(): AudioEngine {
   const standbyPreloadedTrackRef = useRef<{ videoId: string; url: string } | null>(null);
   const standbyUnlockedRef = useRef(false);
   const isAutoAdvancingRef = useRef(false);
+  const isHandoffInProgressRef = useRef(false);
   const repeatCycleRef = useRef<PlayableTrack[] | null>(null);
 
   const [currentTrack,  setCurrentTrack]  = useState<PlayableTrack | null>(null);
@@ -514,15 +515,19 @@ export function useAudioEngine(): AudioEngine {
     let candidate = nextTrackCandidate;
     if (candidate === undefined) {
       const { queue, history } = queueStateRef.current;
-      if (queue.length > 0) {
-        candidate = queue[0];
+      const current = currentTrackRef.current;
+      const currentIdx = current ? queue.findIndex((t) => t.videoId === current.videoId) : -1;
+      const remainingQueue = currentIdx !== -1 ? queue.slice(currentIdx + 1) : queue;
+
+      if (remainingQueue.length > 0) {
+        candidate = remainingQueue[0];
       } else if (repeatModeRef.current === "all") {
         if (repeatCycleRef.current && repeatCycleRef.current.length > 0) {
           candidate = repeatCycleRef.current[0];
         } else {
           const cycle = allTracksRef.current.length > 0
             ? allTracksRef.current
-            : (currentTrackRef.current ? [...[...history].reverse(), currentTrackRef.current] : [...history].reverse());
+            : (current ? [...[...history].reverse(), current] : [...history].reverse());
           if (cycle.length > 0) {
             if (shuffleOnRef.current && cycle.length > 1) {
               const shuffled = shuffleArray(cycle, true);
@@ -555,6 +560,7 @@ export function useAudioEngine(): AudioEngine {
     standby.loop = false;
     standby.src = streamUrl;
     standby.load();
+    standby.pause(); // Mutelock: Double pause to guarantee standby stays paused on iOS
     standbyPreloadedTrackRef.current = { videoId: candidate.videoId, url: streamUrl };
     console.log(`[AUDIO ENGINE] Pre-buffered track on standby (${activeAudioSlotRef.current === "A" ? "Slot B" : "Slot A"}):`, candidate.title);
   }, [getStandbyAudio]);
@@ -999,14 +1005,16 @@ export function useAudioEngine(): AudioEngine {
         return;
       }
 
-      // Determine next track:
+      // Determine next track using Self-Reconciling Index Offset:
       let nextTrack: PlayableTrack | null = null;
       let chosenIdx = 0;
-      let newQueue = queue;
+      const currentIdx = current ? queue.findIndex((t) => t.videoId === current.videoId) : -1;
+      const remainingQueue = currentIdx !== -1 ? queue.slice(currentIdx + 1) : queue;
+      let newQueue = remainingQueue;
 
-      if (queue.length > 0) {
-        nextTrack = queue[0];
-        newQueue = queue.slice(1);
+      if (remainingQueue.length > 0) {
+        nextTrack = remainingQueue[0];
+        newQueue = remainingQueue.slice(1);
       } else if (repeat === "all") {
         let full = repeatCycleRef.current && repeatCycleRef.current.length > 0
           ? repeatCycleRef.current
@@ -1075,91 +1083,96 @@ export function useAudioEngine(): AudioEngine {
       const standbyAudio = getStandbyAudio();
 
       if (standbyAudio && isStandbyPreloaded) {
-        const { oldActive, newActive } = switchActiveSlot();
-        currentTrackRef.current = nextTrack;
-        setCurrentTrack(nextTrack);
+        isHandoffInProgressRef.current = true;
+        try {
+          const { oldActive, newActive } = switchActiveSlot();
+          currentTrackRef.current = nextTrack;
+          setCurrentTrack(nextTrack);
 
-        // Synchronize stream cache and duration for nextTrack to prevent stale duration bugs
-        const cachedStream = getCachedStream(nextTrack.videoId);
-        currentStreamRef.current = cachedStream || null;
-        setCurrentStream(cachedStream || null);
+          // Synchronize stream cache and duration for nextTrack to prevent stale duration bugs
+          const cachedStream = getCachedStream(nextTrack.videoId);
+          currentStreamRef.current = cachedStream || null;
+          setCurrentStream(cachedStream || null);
 
-        const initialDur = nextTrack.durationSeconds || cachedStream?.durationSeconds || 0;
-        setDuration(initialDur);
+          const initialDur = nextTrack.durationSeconds || cachedStream?.durationSeconds || 0;
+          setDuration(initialDur);
 
-        if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
-          try {
-            const meta = parseTrackMeta(nextTrack.title, nextTrack.channelName, initialDur);
-            navigator.mediaSession.metadata = new MediaMetadata({
-              title:   meta.title,
-              artist:  meta.artist,
-              album:   meta.channelName || "Dengarkan",
-              artwork: buildArtwork(nextTrack.thumbnailUrl),
-            });
-            navigator.mediaSession.playbackState = "playing";
-            if (newActive) safeSetPositionState(newActive, initialDur, 0);
-          } catch { /* ignore */ }
-        }
-
-        console.log(`[PING-PONG] Switching slot to ${activeAudioSlotRef.current} for: ${nextTrack.title}`);
-        setPlayerState("playing");
-
-        // Clean up previous active element immediately without tearing down AVPlayer pipeline
-        if (oldActive) {
-          oldActive.pause();
-        }
-
-        // Start playing the new active element
-        if (newActive) {
-          newActive.loop = (repeat === "one");
-          newActive.volume = isFinite(volume) && volume >= 0 && volume <= 1 ? volume : DEFAULT_VOLUME;
-          try {
-            const playPromise = newActive.play();
-            if (playPromise) void playPromise.catch((e) => console.warn("[PING-PONG] Play failed:", e));
-          } catch (e) {
-            console.warn("[PING-PONG] Play threw:", e);
+          if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+            try {
+              const meta = parseTrackMeta(nextTrack.title, nextTrack.channelName, initialDur);
+              navigator.mediaSession.metadata = new MediaMetadata({
+                title:   meta.title,
+                artist:  meta.artist,
+                album:   meta.channelName || "Dengarkan",
+                artwork: buildArtwork(nextTrack.thumbnailUrl),
+              });
+              navigator.mediaSession.playbackState = "playing";
+              if (newActive) safeSetPositionState(newActive, initialDur, 0);
+            } catch { /* ignore */ }
           }
-        }
 
-        standbyPreloadedTrackRef.current = null;
-        let upcomingCandidate: PlayableTrack | null = null;
-        if (newQueue.length > 0) {
-          upcomingCandidate = newQueue[0];
-        } else if (repeat === "all") {
-          const cycle = allTracksRef.current.length > 0
-            ? allTracksRef.current
-            : [...[...queueStateRef.current.history].reverse(), current, nextTrack].filter(
-                (t): t is PlayableTrack => Boolean(t)
-              );
-          if (cycle.length > 0) {
-            if (shuffleOn && cycle.length > 1) {
-              const shuffledCycle = shuffleArray(cycle, true);
-              upcomingCandidate = shuffledCycle[0];
-              repeatCycleRef.current = shuffledCycle;
-            } else {
-              upcomingCandidate = cycle[0];
-              repeatCycleRef.current = cycle;
+          console.log(`[PING-PONG] Switching slot to ${activeAudioSlotRef.current} for: ${nextTrack.title}`);
+          setPlayerState("playing");
+
+          // Clean up previous active element immediately without tearing down AVPlayer pipeline
+          if (oldActive) {
+            oldActive.pause();
+          }
+
+          // Start playing the new active element
+          if (newActive) {
+            newActive.loop = (repeat === "one");
+            newActive.volume = isFinite(volume) && volume >= 0 && volume <= 1 ? volume : DEFAULT_VOLUME;
+            try {
+              const playPromise = newActive.play();
+              if (playPromise) void playPromise.catch((e) => console.warn("[PING-PONG] Play failed:", e));
+            } catch (e) {
+              console.warn("[PING-PONG] Play threw:", e);
             }
           }
-        }
-        syncStandbyPreload(upcomingCandidate);
-        isAutoAdvancingRef.current = false;
 
-        // Fetch stream in background if not in cache to guarantee exact canonical duration
-        if (!cachedStream) {
-          void fetchStreamWithCache(nextTrack.videoId)
-            .then((stream) => {
-              if (currentTrackRef.current?.videoId === nextTrack.videoId) {
-                currentStreamRef.current = stream;
-                setCurrentStream(stream);
-                if (stream.durationSeconds && stream.durationSeconds > 0) {
-                  setDuration(stream.durationSeconds);
-                }
+          standbyPreloadedTrackRef.current = null;
+          let upcomingCandidate: PlayableTrack | null = null;
+          if (newQueue.length > 0) {
+            upcomingCandidate = newQueue[0];
+          } else if (repeat === "all") {
+            const cycle = allTracksRef.current.length > 0
+              ? allTracksRef.current
+              : [...[...queueStateRef.current.history].reverse(), current, nextTrack].filter(
+                  (t): t is PlayableTrack => Boolean(t)
+                );
+            if (cycle.length > 0) {
+              if (shuffleOn && cycle.length > 1) {
+                const shuffledCycle = shuffleArray(cycle, true);
+                upcomingCandidate = shuffledCycle[0];
+                repeatCycleRef.current = shuffledCycle;
+              } else {
+                upcomingCandidate = cycle[0];
+                repeatCycleRef.current = cycle;
               }
-            })
-            .catch((err) => {
-              console.warn("Background fetchStreamWithCache failed on ping-pong switch:", err);
-            });
+            }
+          }
+          syncStandbyPreload(upcomingCandidate);
+          isAutoAdvancingRef.current = false;
+
+          // Fetch stream in background if not in cache to guarantee exact canonical duration
+          if (!cachedStream) {
+            void fetchStreamWithCache(nextTrack.videoId)
+              .then((stream) => {
+                if (currentTrackRef.current?.videoId === nextTrack.videoId) {
+                  currentStreamRef.current = stream;
+                  setCurrentStream(stream);
+                  if (stream.durationSeconds && stream.durationSeconds > 0) {
+                    setDuration(stream.durationSeconds);
+                  }
+                }
+              })
+              .catch((err) => {
+                console.warn("Background fetchStreamWithCache failed on ping-pong switch:", err);
+              });
+          }
+        } finally {
+          isHandoffInProgressRef.current = false;
         }
       } else {
         await directLoadTrack(nextTrack);
@@ -1247,8 +1260,32 @@ export function useAudioEngine(): AudioEngine {
 
     const elements = [audioA, audioB];
 
+    const onPlay = (e: Event) => {
+      const standby = getStandbyAudio();
+      // Standby Audio Mutelock: Immediately force pause if standby attempts unauthorized playback
+      if (standby && e.target === standby && !isHandoffInProgressRef.current) {
+        console.warn("[MUTELOCK] Standby element received unauthorized play event! Forcing pause immediately.");
+        standby.pause();
+        return;
+      }
+      if (e.target !== getActiveAudio()) {
+        (e.target as HTMLAudioElement)?.pause();
+        return;
+      }
+    };
+
     const onPlaying = (e: Event) => {
-      if (e.target !== getActiveAudio()) return;
+      const standby = getStandbyAudio();
+      // Standby Audio Mutelock: Intercept any playing event on standby outside authorized handoff
+      if (standby && e.target === standby && !isHandoffInProgressRef.current) {
+        console.warn("[MUTELOCK] Standby element started playing without handoff! Forcing pause immediately.");
+        standby.pause();
+        return;
+      }
+      if (e.target !== getActiveAudio()) {
+        (e.target as HTMLAudioElement)?.pause();
+        return;
+      }
       setTimeout(() => {
         isAdvancingRef.current = false;
       }, 1000);
@@ -1294,7 +1331,15 @@ export function useAudioEngine(): AudioEngine {
     };
 
     const onCanPlay = (e: Event) => {
-      if (e.target !== getActiveAudio()) return;
+      const standby = getStandbyAudio();
+      if (standby && e.target === standby && !isHandoffInProgressRef.current) {
+        standby.pause();
+        return;
+      }
+      if (e.target !== getActiveAudio()) {
+        (e.target as HTMLAudioElement)?.pause();
+        return;
+      }
       const audio = getActiveAudio();
       if (audio && !audio.paused) setPlayerState("playing");
     };
@@ -1320,6 +1365,11 @@ export function useAudioEngine(): AudioEngine {
     const onProgress = () => { /* buffer bar sync if needed */ };
 
     const onEnded = (e: Event) => {
+      const standby = getStandbyAudio();
+      if (standby && e.target === standby) {
+        standby.pause();
+        return;
+      }
       if (e.target !== getActiveAudio()) return;
       const audio = getActiveAudio();
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
@@ -1329,6 +1379,11 @@ export function useAudioEngine(): AudioEngine {
     };
 
     const onTimeUpdate = (e: Event) => {
+      const standby = getStandbyAudio();
+      if (standby && e.target === standby) {
+        standby.pause();
+        return;
+      }
       if (e.target !== getActiveAudio()) return;
       if (isAdvancingRef.current) return;
       const audio = getActiveAudio();
@@ -1406,6 +1461,7 @@ export function useAudioEngine(): AudioEngine {
     };
 
     for (const el of elements) {
+      el.addEventListener("play",            onPlay);
       el.addEventListener("playing",         onPlaying);
       el.addEventListener("pause",           onPause);
       el.addEventListener("waiting",         onWaiting);
@@ -1421,6 +1477,7 @@ export function useAudioEngine(): AudioEngine {
 
     return () => {
       for (const el of elements) {
+        el.removeEventListener("play",           onPlay);
         el.removeEventListener("playing",        onPlaying);
         el.removeEventListener("pause",          onPause);
         el.removeEventListener("waiting",        onWaiting);
@@ -1434,7 +1491,7 @@ export function useAudioEngine(): AudioEngine {
         el.removeEventListener("error",          onError);
       }
     };
-  }, [getActiveAudio]);
+  }, [getActiveAudio, getStandbyAudio]);
 
   // ── Media Session (Lock Screen / AirPods / Bluetooth) ─────────────────────
 

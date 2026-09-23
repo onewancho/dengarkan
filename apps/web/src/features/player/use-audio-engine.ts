@@ -381,6 +381,7 @@ export function useAudioEngine(): AudioEngine {
   const isAutoAdvancingRef = useRef(false);
   const isHandoffInProgressRef = useRef(false);
   const repeatCycleRef = useRef<PlayableTrack[] | null>(null);
+  const masterPlaylistRef = useRef<PlayableTrack[]>([]);
 
   const [currentTrack,  setCurrentTrack]  = useState<PlayableTrack | null>(null);
   const [currentStream, setCurrentStream] = useState<AudioStream   | null>(null);
@@ -448,6 +449,9 @@ export function useAudioEngine(): AudioEngine {
 
   const allTracksRef = useRef<PlayableTrack[]>(allTracks);
   allTracksRef.current = allTracks;
+  if (masterPlaylistRef.current.length === 0 && allTracks.length > 0) {
+    masterPlaylistRef.current = allTracks;
+  }
 
   const currentIndex = currentTrack ? queueState.history.length : -1;
 
@@ -525,9 +529,11 @@ export function useAudioEngine(): AudioEngine {
         if (repeatCycleRef.current && repeatCycleRef.current.length > 0) {
           candidate = repeatCycleRef.current[0];
         } else {
-          const cycle = allTracksRef.current.length > 0
-            ? allTracksRef.current
-            : (current ? [...[...history].reverse(), current] : [...history].reverse());
+          const cycle = masterPlaylistRef.current.length > 0
+            ? masterPlaylistRef.current
+            : (allTracksRef.current.length > 0
+              ? allTracksRef.current
+              : (current ? [...[...history].reverse(), current] : [...history].reverse()));
           if (cycle.length > 0) {
             if (shuffleOnRef.current && cycle.length > 1) {
               const shuffled = shuffleArray(cycle, true);
@@ -727,10 +733,13 @@ export function useAudioEngine(): AudioEngine {
   }, [directLoadTrack]);
 
   const playTrack = useCallback(async (track: PlayableTrack, resetQueue = false) => {
+    repeatCycleRef.current = null;
     if (resetQueue) {
+      masterPlaylistRef.current = [track];
       dispatchQueue({ type: "CLEAR" });
       await directLoadTrack(track, [track]);
     } else {
+      masterPlaylistRef.current = [...masterPlaylistRef.current, track];
       if (currentTrackRef.current) {
         dispatchQueue({ type: "PUSH_HISTORY", track: currentTrackRef.current });
       }
@@ -745,6 +754,8 @@ export function useAudioEngine(): AudioEngine {
     if (tracks.length === 0) return;
     const idx     = Math.max(0, Math.min(startIndex, tracks.length - 1));
     const current = tracks[idx];
+    masterPlaylistRef.current = tracks;
+    repeatCycleRef.current = null;
     dispatchQueue({ type: "LOAD_PLAYLIST", tracks, startIndex: idx });
 
     await directLoadTrack(current);
@@ -850,6 +861,8 @@ export function useAudioEngine(): AudioEngine {
     setCurrentStream(null);
     setPlayerState("idle");
     setDuration(0);
+    masterPlaylistRef.current = [];
+    repeatCycleRef.current = null;
     dispatchQueue({ type: "CLEAR_ALL" });
     if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
       try {
@@ -862,9 +875,11 @@ export function useAudioEngine(): AudioEngine {
   // ── Queue management ──────────────────────────────────────────────────────
 
   const addToQueue = useCallback((t: PlayableTrack) => {
+    repeatCycleRef.current = null;
     if (!currentTrackRef.current) {
       void playTrack(t);
     } else {
+      masterPlaylistRef.current = [...masterPlaylistRef.current, t];
       dispatchQueue({ type: "ADD", track: t });
     }
   }, [playTrack]);
@@ -885,6 +900,8 @@ export function useAudioEngine(): AudioEngine {
       }
     } else {
       const filtered = all.filter((_: PlayableTrack, i: number) => i !== index);
+      masterPlaylistRef.current = filtered;
+      repeatCycleRef.current = null;
       const curId = currentTrackRef.current?.videoId;
       const newCurIdx = curId ? filtered.findIndex((t: PlayableTrack) => t.videoId === curId) : -1;
       if (newCurIdx !== -1) {
@@ -917,6 +934,8 @@ export function useAudioEngine(): AudioEngine {
     const reordered = [...all];
     const [moved] = reordered.splice(fromIndex, 1);
     reordered.splice(toIndex, 0, moved);
+    masterPlaylistRef.current = reordered;
+    repeatCycleRef.current = null;
 
     const curId = currentTrackRef.current?.videoId;
     const newCurIdx = curId ? reordered.findIndex((t: PlayableTrack) => t.videoId === curId) : -1;
@@ -960,6 +979,7 @@ export function useAudioEngine(): AudioEngine {
   const setRepeatMode = useCallback((m: RepeatMode) => {
     setRepeatModeState(m);
     repeatModeRef.current = m;
+    repeatCycleRef.current = null;
     try { localStorage.setItem(REPEAT_KEY, m); } catch { /* ignore */ }
 
     const activeAudio = getActiveAudio();
@@ -1016,18 +1036,26 @@ export function useAudioEngine(): AudioEngine {
         nextTrack = remainingQueue[0];
         newQueue = remainingQueue.slice(1);
       } else if (repeat === "all") {
-        let full = repeatCycleRef.current && repeatCycleRef.current.length > 0
-          ? repeatCycleRef.current
-          : (allTracksRef.current.length > 0
-              ? allTracksRef.current
-              : (current ? [...[...history].reverse(), current] : [...history].reverse()));
-        repeatCycleRef.current = null;
-        if (full.length > 0) {
-          if (shuffleOn && full.length > 1) {
-            full = shuffleArray(full, true);
+        if (repeatCycleRef.current && repeatCycleRef.current.length > 0) {
+          // Preload already prepared the next cycle.
+          // CRITICAL: DO NOT reshuffle here to prevent reshuffle desync with standby preloaded track!
+          const cycle = repeatCycleRef.current;
+          repeatCycleRef.current = null;
+          nextTrack = { ...cycle[0] };
+          newQueue = cycle.slice(1);
+        } else {
+          let full = masterPlaylistRef.current.length > 0
+            ? masterPlaylistRef.current
+            : (allTracksRef.current.length > 0
+                ? allTracksRef.current
+                : (current ? [...[...history].reverse(), current] : [...history].reverse()));
+          if (full.length > 0) {
+            if (shuffleOn && full.length > 1) {
+              full = shuffleArray(full, true);
+            }
+            nextTrack = { ...full[0] };
+            newQueue = full.slice(1);
           }
-          nextTrack = { ...full[0] };
-          newQueue = full.slice(1);
         }
       }
 
@@ -1136,11 +1164,13 @@ export function useAudioEngine(): AudioEngine {
           if (newQueue.length > 0) {
             upcomingCandidate = newQueue[0];
           } else if (repeat === "all") {
-            const cycle = allTracksRef.current.length > 0
-              ? allTracksRef.current
-              : [...[...queueStateRef.current.history].reverse(), current, nextTrack].filter(
-                  (t): t is PlayableTrack => Boolean(t)
-                );
+            const cycle = masterPlaylistRef.current.length > 0
+              ? masterPlaylistRef.current
+              : (allTracksRef.current.length > 0
+                ? allTracksRef.current
+                : [...[...queueStateRef.current.history].reverse(), current, nextTrack].filter(
+                    (t): t is PlayableTrack => Boolean(t)
+                  ));
             if (cycle.length > 0) {
               if (shuffleOn && cycle.length > 1) {
                 const shuffledCycle = shuffleArray(cycle, true);
@@ -1227,6 +1257,7 @@ export function useAudioEngine(): AudioEngine {
     }
 
     const target = all[index];
+    repeatCycleRef.current = null;
     const newHistory = all.slice(0, index).reverse().slice(0, HISTORY_MAX);
     let newQueue = all.slice(index + 1);
 

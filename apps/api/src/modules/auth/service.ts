@@ -6,7 +6,7 @@
 // ============================================
 
 import * as argon2 from 'argon2';
-import { eq }     from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, schema } from '../../infrastructure/database/index.js';
 import { sessionRepository } from '../../infrastructure/repositories/index.js';
 
@@ -87,17 +87,18 @@ export const DEV_USERS: Record<string, DevUserRecord> = {
 };
 
 export async function findUserByUsername(username: string) {
+  const clean = username.trim().toLowerCase();
   try {
     const [user] = await db
       .select()
       .from(schema.users)
-      .where(eq(schema.users.username, username))
+      .where(sql`lower(${schema.users.username}) = ${clean}`)
       .limit(1);
     if (user) return user;
   } catch {
     // Database connection refused or offline — fall back to configured dev users
   }
-  return DEV_USERS[username] ?? null;
+  return DEV_USERS[clean] ?? DEV_USERS[username] ?? null;
 }
 
 export async function updateUserLastLoginAndDevice(userId: string, device: string): Promise<void> {

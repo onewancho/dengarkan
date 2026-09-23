@@ -40,8 +40,8 @@ export default function LoginPage() {
     setError("");
 
     const formData = new FormData(e.currentTarget);
-    const submittedUsername = ((formData.get("username") as string) || username).trim();
-    const submittedPassword = (formData.get("password") as string) || password;
+    const submittedUsername = ((formData.get("username") as string) || username).trim().toLowerCase();
+    const submittedPassword = ((formData.get("password") as string) || password).trim();
 
     if (!submittedUsername || !submittedPassword) {
       setError("Silakan masukkan username dan password.");
@@ -60,7 +60,9 @@ export default function LoginPage() {
         router.replace("/app");
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Gagal masuk. Periksa username dan password Anda.";
+      const msg =
+        (err as { message?: string })?.message ||
+        (err instanceof Error ? err.message : "Gagal masuk. Periksa username dan password Anda.");
       setError(msg);
     } finally {
       setIsSubmitting(false);

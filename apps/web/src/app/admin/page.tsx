@@ -147,14 +147,15 @@ export default function AdminAccountsPage() {
 
   const handleSubmitAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanUsername = formUsername.trim();
-    if (!cleanUsername || !formPassword) return;
+    const cleanUsername = formUsername.trim().toLowerCase();
+    const cleanPassword = formPassword.trim();
+    if (!cleanUsername || !cleanPassword) return;
 
     setIsSubmitting(true);
     try {
       const res = await apiClient.admin.createUser({
         username: cleanUsername,
-        password: formPassword,
+        password: cleanPassword,
         role: formRole,
         status: formStatus,
         device: formDevice.trim() || undefined,
@@ -185,7 +186,8 @@ export default function AdminAccountsPage() {
   const handleSubmitEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingAccount) return;
-    const cleanUsername = formUsername.trim();
+    const cleanUsername = formUsername.trim().toLowerCase();
+    const cleanPassword = formPassword.trim();
     if (!cleanUsername) return;
 
     setIsSubmitting(true);
@@ -195,7 +197,7 @@ export default function AdminAccountsPage() {
         role: formRole,
         status: formStatus,
         device: formDevice.trim() || undefined,
-        ...(formPassword.trim() ? { password: formPassword.trim() } : {}),
+        ...(cleanPassword ? { password: cleanPassword } : {}),
       });
 
       setAccounts((prev) =>
@@ -539,6 +541,8 @@ export default function AdminAccountsPage() {
                 <input
                   type="text"
                   required
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   value={formUsername}
                   onChange={(e) => setFormUsername(e.target.value)}
                   placeholder="misal: abang_baru"
@@ -553,6 +557,8 @@ export default function AdminAccountsPage() {
                 <input
                   type="password"
                   required
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   value={formPassword}
                   onChange={(e) => setFormPassword(e.target.value)}
                   placeholder="Masukkan password akun"
@@ -650,6 +656,8 @@ export default function AdminAccountsPage() {
                 <input
                   type="text"
                   required
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   value={formUsername}
                   onChange={(e) => setFormUsername(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[#202024] border border-white/10 text-white text-xs focus:outline-none focus:border-[#39FF14]"
@@ -662,6 +670,8 @@ export default function AdminAccountsPage() {
                 </label>
                 <input
                   type="password"
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   value={formPassword}
                   onChange={(e) => setFormPassword(e.target.value)}
                   placeholder="Kosongkan jika tidak ingin mengubah"

@@ -80,8 +80,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    const username = body.username.trim();
-    const password = body.password;
+    const username = body.username.trim().toLowerCase();
+    const password = body.password.trim();
     const role = (body.role === 'superadmin' ? 'superadmin' : 'user') as 'superadmin' | 'user';
     const status = (body.status === 'suspended' ? 'suspended' : 'active') as 'active' | 'suspended';
     const device = body.device?.trim() || 'Belum ada perangkat';
@@ -206,7 +206,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     };
 
     if (body.username && body.username.trim()) {
-      updates.username = body.username.trim();
+      updates.username = body.username.trim().toLowerCase();
     }
     if (body.role === 'user' || body.role === 'superadmin') {
       updates.role = body.role;

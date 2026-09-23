@@ -108,15 +108,17 @@ export function SearchView() {
   }, [query, runSearch]);
 
   const handlePlayTrack = (track: SearchResult) => {
-    if (query.trim()) {
-      saveToHistory(query);
+    const q = query.trim() || latestQueryRef.current;
+    if (q) {
+      saveToHistory(q);
     }
     void playTrack(track);
   };
 
   const handleAddToQueue = (track: SearchResult) => {
-    if (query.trim()) {
-      saveToHistory(query);
+    const q = query.trim() || latestQueryRef.current;
+    if (q) {
+      saveToHistory(q);
     }
     if (!currentTrack) {
       void playTrack(track);
@@ -342,7 +344,16 @@ export function SearchView() {
                   </button>
 
                   {/* Add to playlist */}
-                  <AddToPlaylistButton track={track} />
+                  <div
+                    onClickCapture={() => {
+                      const q = query.trim() || latestQueryRef.current;
+                      if (q) {
+                        saveToHistory(q);
+                      }
+                    }}
+                  >
+                    <AddToPlaylistButton track={track} />
+                  </div>
                 </div>
               </div>
             );

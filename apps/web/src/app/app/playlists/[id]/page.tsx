@@ -218,7 +218,7 @@ function TrackRow({
   return (
     <div
       data-track-index={index}
-      className={`group relative flex items-center gap-2.5 px-3 py-2.5 rounded-2xl border transition-all duration-150 ${
+      className={`group relative flex items-center gap-2 p-2.5 rounded-xl border transition-all duration-150 ${
         isDragging
           ? "opacity-75 scale-[1.02] shadow-xl border-[#39FF14]/60 bg-[#222226] ring-2 ring-[#39FF14]/30 z-20"
           : isDropTarget
@@ -235,7 +235,7 @@ function TrackRow({
         role="button"
         tabIndex={0}
         aria-label={`Urutkan ${track.title}. Posisi ${index + 1} dari ${allTracks.length}. Gunakan Panah Atas/Bawah.`}
-        className="touch-none select-none p-1.5 rounded-xl text-[#8E8E93] hover:text-white hover:bg-white/5 cursor-grab active:cursor-grabbing transition-default flex-shrink-0 min-w-[32px] min-h-[36px] flex items-center justify-center focus:outline-none focus:ring-1 focus:ring-[#39FF14]"
+        className="flex-shrink-0 w-8 h-10 flex items-center justify-center text-[#8E8E93] hover:text-white cursor-grab active:cursor-grabbing touch-none select-none"
         onPointerDown={(e) => {
           if (e.button !== 0) return;
           e.preventDefault();
@@ -271,45 +271,11 @@ function TrackRow({
           }
         }}
       >
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="9" cy="5" r="1" /><circle cx="15" cy="5" r="1" />
-          <circle cx="9" cy="12" r="1" /><circle cx="15" cy="12" r="1" />
-          <circle cx="9" cy="19" r="1" /><circle cx="15" cy="19" r="1" />
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="9" cy="6" r="1.5" /><circle cx="15" cy="6" r="1.5" />
+          <circle cx="9" cy="12" r="1.5" /><circle cx="15" cy="12" r="1.5" />
+          <circle cx="9" cy="18" r="1.5" /><circle cx="15" cy="18" r="1.5" />
         </svg>
-      </div>
-
-      {/* Accessible Move Up / Down controls */}
-      <div className="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-default flex-shrink-0">
-        <button
-          disabled={index === 0}
-          onClick={(e) => {
-            e.stopPropagation();
-            onAnnounce(`Memindahkan ${track.title} ke atas`);
-            void moveTrackUp(index);
-          }}
-          className="p-1 rounded text-[#8E8E93] hover:text-white disabled:opacity-20 hover:bg-white/5 transition-default focus:opacity-100 cursor-pointer"
-          aria-label={`Pindahkan ${track.title} ke atas`}
-          title="Ke atas"
-        >
-          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <polyline points="18 15 12 9 6 15" />
-          </svg>
-        </button>
-        <button
-          disabled={index === allTracks.length - 1}
-          onClick={(e) => {
-            e.stopPropagation();
-            onAnnounce(`Memindahkan ${track.title} ke bawah`);
-            void moveTrackDown(index);
-          }}
-          className="p-1 rounded text-[#8E8E93] hover:text-white disabled:opacity-20 hover:bg-white/5 transition-default focus:opacity-100 cursor-pointer"
-          aria-label={`Pindahkan ${track.title} ke bawah`}
-          title="Ke bawah"
-        >
-          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </button>
       </div>
 
       {/* Position Number or Equalizer */}
@@ -339,7 +305,7 @@ function TrackRow({
       <button
         type="button"
         onClick={handlePlay}
-        className="relative w-11 h-11 rounded-xl overflow-hidden flex-shrink-0 bg-[#222226] border border-white/10 focus:outline-none cursor-pointer"
+        className="relative w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-[#222226] border border-white/10 focus:outline-none cursor-pointer"
         aria-label={`${isCurrent && isPlaying ? "Jeda" : "Putar"} ${track.title}`}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}

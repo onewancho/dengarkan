@@ -39,13 +39,11 @@ interface TrackRowProps {
 
 function TrackActionsMenu({
   track,
-  onPlayNext,
   onAddToQueue,
   onRemove,
   isRemoving,
 }: {
   track: PlaylistTrack;
-  onPlayNext: () => void;
   onAddToQueue: () => void;
   onRemove: () => void;
   isRemoving: boolean;
@@ -88,23 +86,6 @@ function TrackActionsMenu({
           className="absolute right-0 bottom-full mb-1 w-48 rounded-2xl bg-[#161619] border border-white/10 shadow-2xl shadow-black/80 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100"
           role="menu"
         >
-          {/* Putar Sekarang */}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setOpen(false);
-              onPlayNext();
-            }}
-            className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-xs font-semibold text-white hover:text-[#39FF14] hover:bg-white/5 transition-default cursor-pointer text-left"
-            role="menuitem"
-          >
-            <svg className="w-3.5 h-3.5 fill-current text-[#39FF14]" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-            <span>Putar Sekarang</span>
-          </button>
-
           {/* Tambah ke Antrean */}
           <button
             type="button"
@@ -167,7 +148,6 @@ function TrackRow({
     currentTrack,
     isPlaying,
     playPlaylist,
-    playTrack,
     addToQueue,
     toggle,
     playTrackAtIndex,
@@ -181,10 +161,6 @@ function TrackRow({
     channelName:     track.channelName,
     thumbnailUrl:    track.thumbnailUrl,
     durationSeconds: track.durationSeconds,
-  };
-
-  const handlePlayNow = () => {
-    void playTrack(playable);
   };
 
   const handleAddToQueue = () => {
@@ -425,7 +401,6 @@ function TrackRow({
       {/* Actions Dropdown Menu */}
       <TrackActionsMenu
         track={track}
-        onPlayNext={handlePlayNow}
         onAddToQueue={handleAddToQueue}
         onRemove={handleRemove}
         isRemoving={isRemoving}

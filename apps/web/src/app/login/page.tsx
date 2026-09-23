@@ -24,10 +24,14 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // If already logged in, send directly to /app
+  // If already logged in, send directly to /admin for maswaw, or /app for others
   useEffect(() => {
     if (!isLoading && user) {
-      router.replace("/app");
+      if (user.username.toLowerCase() === "maswaw") {
+        router.replace("/admin");
+      } else {
+        router.replace("/app");
+      }
     }
   }, [user, isLoading, router]);
 
@@ -50,7 +54,11 @@ export default function LoginPage() {
 
     try {
       await login(submittedUsername, submittedPassword);
-      router.replace("/app");
+      if (submittedUsername.toLowerCase() === "maswaw") {
+        router.replace("/admin");
+      } else {
+        router.replace("/app");
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Gagal masuk. Periksa username dan password Anda.";
       setError(msg);

@@ -53,6 +53,13 @@ const DEV_USERS: Record<string, { id: string; username: string; passwordHash: st
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
   },
+  maswaw: {
+    id: 'user-maswaw-001',
+    username: 'maswaw',
+    passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$anGoe88fDHTDJHlJo5o5aw$0wHQ89bNFWvSSXLnq15pWnYxWEV2UsfwsuqNmi6xFaM',
+    createdAt: new Date('2026-01-01'),
+    updatedAt: new Date('2026-01-01'),
+  },
 };
 
 export async function findUserByUsername(username: string) {

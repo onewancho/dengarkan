@@ -143,4 +143,34 @@ export const apiClient = {
         body: JSON.stringify({ trackIds }),
       }),
   },
+
+  admin: {
+    listAccounts: (): Promise<{ accounts: AdminUserAccount[] }> =>
+      request("/api/admin/accounts"),
+    createAccount: (data: Partial<AdminUserAccount>): Promise<AdminUserAccount> =>
+      request("/api/admin/accounts", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    updateAccount: (id: string, data: Partial<AdminUserAccount>): Promise<AdminUserAccount> =>
+      request(`/api/admin/accounts/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    deleteAccount: (id: string): Promise<void> =>
+      request(`/api/admin/accounts/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+  },
 };
+
+export interface AdminUserAccount {
+  id: string;
+  username: string;
+  role: "superadmin" | "user";
+  status: "active" | "suspended";
+  lastLogin: string;
+  activeDuration: string;
+  device: string;
+  createdAt: string;
+}

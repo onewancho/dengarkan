@@ -14,12 +14,25 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  async function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
+
+    const formData = new FormData(e.currentTarget);
+    const submittedUsername = ((formData.get("username") as string) || username).trim();
+    const submittedPassword = (formData.get("password") as string) || password;
+
+    if (!submittedUsername || !submittedPassword) {
+      setError("Please enter username and password.");
+      return;
+    }
+
+    setUsername(submittedUsername);
+    setPassword(submittedPassword);
     setIsSubmitting(true);
+
     try {
-      await login(username, password);
+      await login(submittedUsername, submittedPassword);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Login failed. Please try again.";
       setError(msg);
@@ -72,6 +85,7 @@ export default function LoginPage() {
             </label>
             <input
               id="login-username"
+              name="username"
               type="text"
               autoComplete="username"
               autoCapitalize="none"
@@ -79,6 +93,7 @@ export default function LoginPage() {
               required
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              onInput={(e) => setUsername(e.currentTarget.value)}
               disabled={isSubmitting}
               className="w-full px-4 py-3 rounded-xl bg-surface-2 border border-surface-4/60 text-text-primary placeholder-text-muted text-sm focus:outline-none focus:border-brand-500/50 focus:ring-1 focus:ring-brand-500/30 transition-default disabled:opacity-50"
               placeholder="Enter username"
@@ -94,11 +109,13 @@ export default function LoginPage() {
             </label>
             <input
               id="login-password"
+              name="password"
               type="password"
               autoComplete="current-password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              onInput={(e) => setPassword(e.currentTarget.value)}
               disabled={isSubmitting}
               className="w-full px-4 py-3 rounded-xl bg-surface-2 border border-surface-4/60 text-text-primary placeholder-text-muted text-sm focus:outline-none focus:border-brand-500/50 focus:ring-1 focus:ring-brand-500/30 transition-default disabled:opacity-50"
               placeholder="Enter password"
@@ -113,7 +130,7 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            disabled={isSubmitting || !username || !password}
+            disabled={isSubmitting}
             className="w-full py-3.5 px-6 rounded-xl bg-brand-500 hover:bg-brand-400 active:bg-brand-600 text-white font-semibold text-sm transition-default disabled:opacity-40 disabled:cursor-not-allowed glow-brand"
           >
             {isSubmitting ? (

@@ -31,12 +31,25 @@ export default function LoginPage() {
     }
   }, [user, isLoading, router]);
 
-  async function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
+
+    const formData = new FormData(e.currentTarget);
+    const submittedUsername = ((formData.get("username") as string) || username).trim();
+    const submittedPassword = (formData.get("password") as string) || password;
+
+    if (!submittedUsername || !submittedPassword) {
+      setError("Silakan masukkan username dan password.");
+      return;
+    }
+
+    setUsername(submittedUsername);
+    setPassword(submittedPassword);
     setIsSubmitting(true);
+
     try {
-      await login(username, password);
+      await login(submittedUsername, submittedPassword);
       router.replace("/app");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Gagal masuk. Periksa username dan password Anda.";
@@ -70,6 +83,7 @@ export default function LoginPage() {
             </label>
             <input
               id="login-username"
+              name="username"
               type="text"
               autoComplete="username"
               autoCapitalize="none"
@@ -77,6 +91,7 @@ export default function LoginPage() {
               required
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              onInput={(e) => setUsername(e.currentTarget.value)}
               disabled={isSubmitting}
               className="w-full px-4 py-3.5 rounded-xl bg-[#161619] border border-white/10 text-white placeholder-[#8E8E93] text-sm focus:outline-none focus:border-[#39FF14] focus:ring-1 focus:ring-[#39FF14]/40 transition-default disabled:opacity-50"
               placeholder="Masukkan username"
@@ -92,11 +107,13 @@ export default function LoginPage() {
             </label>
             <input
               id="login-password"
+              name="password"
               type="password"
               autoComplete="current-password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              onInput={(e) => setPassword(e.currentTarget.value)}
               disabled={isSubmitting}
               className="w-full px-4 py-3.5 rounded-xl bg-[#161619] border border-white/10 text-white placeholder-[#8E8E93] text-sm focus:outline-none focus:border-[#39FF14] focus:ring-1 focus:ring-[#39FF14]/40 transition-default disabled:opacity-50"
               placeholder="Masukkan password"
@@ -114,7 +131,7 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            disabled={isSubmitting || !username || !password}
+            disabled={isSubmitting}
             className="w-full py-3.5 px-6 rounded-xl bg-[#39FF14] hover:bg-[#57FF38] active:bg-[#29D60D] text-black font-bold text-sm transition-default shadow-lg glow-brand disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
           >
             {isSubmitting ? (

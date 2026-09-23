@@ -25,6 +25,7 @@ function TabBar() {
 
   const isSearch    = pathname === "/app";
   const isQueue     = pathname === "/app/queue";
+  const isHistory   = pathname === "/app/history";
   const isPlaylists = pathname ? pathname.startsWith("/app/playlists") : false;
 
   return (
@@ -33,11 +34,11 @@ function TabBar() {
       role="navigation"
       aria-label="Navigasi Utama"
     >
-      <div className="flex items-center justify-around max-w-lg mx-auto px-4 w-full h-[56px]">
+      <div className="flex items-center justify-around max-w-lg mx-auto px-2 sm:px-4 w-full h-[56px]">
         {/* Tab 1: Home / Cari */}
         <Link
           href="/app"
-          className={`flex flex-col items-center justify-center min-w-[64px] min-h-[44px] rounded-xl transition-default ${
+          className={`flex flex-col items-center justify-center min-w-[56px] min-h-[44px] rounded-xl transition-default ${
             isSearch ? "text-[#39FF14]" : "text-[#8E8E93] hover:text-white"
           }`}
           aria-label="Cari dan Beranda"
@@ -52,7 +53,7 @@ function TabBar() {
         {/* Tab 2: Queue */}
         <Link
           href="/app/queue"
-          className={`flex flex-col items-center justify-center min-w-[64px] min-h-[44px] rounded-xl transition-default ${
+          className={`flex flex-col items-center justify-center min-w-[56px] min-h-[44px] rounded-xl transition-default ${
             isQueue ? "text-[#39FF14]" : "text-[#8E8E93] hover:text-white"
           }`}
           aria-label="Antrean Pemutaran"
@@ -65,10 +66,26 @@ function TabBar() {
           <span className="text-[10px] font-semibold mt-1">Queue</span>
         </Link>
 
-        {/* Tab 3: Playlists */}
+        {/* Tab 3: History */}
+        <Link
+          href="/app/history"
+          className={`flex flex-col items-center justify-center min-w-[56px] min-h-[44px] rounded-xl transition-default ${
+            isHistory ? "text-[#39FF14]" : "text-[#8E8E93] hover:text-white"
+          }`}
+          aria-label="Riwayat Pemutaran"
+          aria-current={isHistory ? "page" : undefined}
+        >
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
+          <span className="text-[10px] font-semibold mt-1">History</span>
+        </Link>
+
+        {/* Tab 4: Playlists */}
         <Link
           href="/app/playlists"
-          className={`flex flex-col items-center justify-center min-w-[64px] min-h-[44px] rounded-xl transition-default ${
+          className={`flex flex-col items-center justify-center min-w-[56px] min-h-[44px] rounded-xl transition-default ${
             isPlaylists ? "text-[#39FF14]" : "text-[#8E8E93] hover:text-white"
           }`}
           aria-label="Daftar Putar"

@@ -107,7 +107,17 @@ export function SearchView() {
     return () => clearTimeout(timer);
   }, [query, runSearch]);
 
+  const handlePlayTrack = (track: SearchResult) => {
+    if (query.trim()) {
+      saveToHistory(query);
+    }
+    void playTrack(track);
+  };
+
   const handleAddToQueue = (track: SearchResult) => {
+    if (query.trim()) {
+      saveToHistory(query);
+    }
     if (!currentTrack) {
       void playTrack(track);
     } else {
@@ -262,7 +272,7 @@ export function SearchView() {
               >
                 {/* Play Button + Track Info */}
                 <button
-                  onClick={() => playTrack(track)}
+                  onClick={() => handlePlayTrack(track)}
                   className="flex items-center gap-3 min-w-0 flex-1 text-left cursor-pointer focus:outline-none"
                   aria-label={`Putar ${track.title}`}
                 >

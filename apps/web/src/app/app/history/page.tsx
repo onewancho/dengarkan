@@ -7,7 +7,7 @@
 // 3-dots Action Menu (Add to Queue & Playlist)
 // ============================================
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { usePlayer } from "@/features/player/context";
 import { usePlaylistContext } from "@/features/playlists/context";
 import { parseTrackMeta } from "@/lib/track-meta";
@@ -311,12 +311,6 @@ export default function HistoryPage() {
   const [historyList, setHistoryList] = useState<PlayableTrack[]>([]);
   const [modalTrack, setModalTrack] = useState<PlayableTrack | null>(null);
 
-  // ── Drag-and-drop state (identical to Queue page) ──────────────────────────
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
-  const [overIndex, setOverIndex] = useState<number | null>(null);
-  const dragItemRef = useRef<number | null>(null);
-  const listRef = useRef<HTMLDivElement | null>(null);
-
   // 1. Initial load from localStorage
   useEffect(() => {
     try {
@@ -337,7 +331,6 @@ export default function HistoryPage() {
     if (!currentTrack || !currentTrack.videoId) return;
 
     setHistoryList((prev) => {
-      // Deduplicate: put current track at the very top of history
       const filtered = prev.filter((t) => t.videoId !== currentTrack.videoId);
       const next = [currentTrack, ...filtered].slice(0, MAX_HISTORY);
       try {
@@ -376,60 +369,6 @@ export default function HistoryPage() {
     void playTrack(track, false);
   };
 
-  // Drag and drop handlers (Pointer Events matching Queue)
-  const handleDragStart = useCallback((idx: number, e: React.PointerEvent) => {
-    if ((e.target as HTMLElement).closest("button, a, input")) return;
-    e.preventDefault();
-    dragItemRef.current = idx;
-    setDragIndex(idx);
-    setOverIndex(idx);
-    try {
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    } catch {}
-  }, []);
-
-  const handleDragMove = useCallback((e: React.PointerEvent) => {
-    if (dragItemRef.current === null || !listRef.current) return;
-
-    const items = listRef.current.querySelectorAll("[data-history-item]");
-    const y = e.clientY;
-
-    for (let i = 0; i < items.length; i++) {
-      const rect = items[i].getBoundingClientRect();
-      if (y >= rect.top && y <= rect.bottom) {
-        setOverIndex(i);
-        break;
-      }
-    }
-  }, []);
-
-  const handleDragEnd = useCallback((e: React.PointerEvent) => {
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
-
-    const from = dragItemRef.current;
-    const to = overIndex;
-
-    if (from !== null && to !== null && from !== to) {
-      setHistoryList((prev) => {
-        const next = [...prev];
-        const [moved] = next.splice(from, 1);
-        if (moved) {
-          next.splice(to, 0, moved);
-          try {
-            localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(next));
-          } catch {}
-        }
-        return next;
-      });
-    }
-
-    dragItemRef.current = null;
-    setDragIndex(null);
-    setOverIndex(null);
-  }, [overIndex]);
-
   return (
     <div className="w-full pt-4 pb-36">
       {/* Header */}
@@ -459,8 +398,8 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      {/* History Track List (100% Identical to Queue layout) */}
-      <div ref={listRef} className="space-y-1.5 select-none">
+      {/* History Track List */}
+      <div className="space-y-1.5">
         {historyList.length === 0 ? (
           <div className="text-center py-16 px-4">
             <div className="w-14 h-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center mx-auto mb-3 text-[#8E8E93]">
@@ -473,47 +412,24 @@ export default function HistoryPage() {
               Belum Ada Riwayat
             </h3>
             <p className="text-xs text-[#8E8E93] max-w-xs mx-auto">
-              Lagu yang Anda putar akan otomatis tercatat di sini dan dapat diatur kembali urutannya.
+              Lagu yang Anda putar akan otomatis tercatat di sini.
             </p>
           </div>
         ) : (
           historyList.map((item, idx) => {
             const meta = parseTrackMeta(item.title, item.channelName, item.durationSeconds);
             const isCurrent = currentTrack?.videoId === item.videoId;
-            const isDragged = dragIndex === idx;
-            const isOver = overIndex === idx && dragIndex !== null && dragIndex !== idx;
 
             return (
               <div
                 key={`${item.videoId}-${idx}`}
-                data-history-item
                 className={`flex items-center gap-2 p-2.5 rounded-xl transition-all duration-150 ${
                   isCurrent
                     ? "bg-[#39FF14]/10 border border-[#39FF14]/30 shadow-md shadow-[#39FF14]/5"
-                    : isDragged
-                    ? "opacity-50 scale-[0.97] bg-[#39FF14]/10 border border-[#39FF14]/30"
-                    : isOver
-                    ? "bg-[#39FF14]/5 border border-[#39FF14]/20 translate-y-0.5"
                     : "bg-white/5 hover:bg-white/10 border border-transparent"
                 }`}
-                onPointerMove={handleDragMove}
-                onPointerUp={handleDragEnd}
               >
-                {/* Drag Handle (Identical to Queue) */}
-                <button
-                  type="button"
-                  className="flex-shrink-0 w-8 h-10 flex items-center justify-center text-[#8E8E93] hover:text-white cursor-grab active:cursor-grabbing touch-none select-none"
-                  onPointerDown={(e) => handleDragStart(idx, e)}
-                  aria-label="Geser untuk mengatur urutan riwayat"
-                >
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                    <circle cx="9" cy="6" r="1.5" /><circle cx="15" cy="6" r="1.5" />
-                    <circle cx="9" cy="12" r="1.5" /><circle cx="15" cy="12" r="1.5" />
-                    <circle cx="9" cy="18" r="1.5" /><circle cx="15" cy="18" r="1.5" />
-                  </svg>
-                </button>
-
-                {/* Number or Equalizer (Identical to Queue) */}
+                {/* Number or Equalizer */}
                 <div className="w-6 flex items-center justify-center flex-shrink-0">
                   {isCurrent && isPlaying ? (
                     <div className="w-3.5 h-3.5 flex items-end gap-0.5">

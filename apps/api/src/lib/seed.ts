@@ -3,7 +3,7 @@
 // Auto-creates the initial user from env vars on first boot.
 // ============================================
 
-import { sql } from 'drizzle-orm';
+import { sql, eq } from 'drizzle-orm';
 import { db, schema } from '../infrastructure/database/index.js';
 import {
   findUserByUsername,
@@ -28,15 +28,20 @@ export async function seedInitialUser(): Promise<void> {
 
   // Ensure super admin 'maswaw' exists in DB
   try {
-    const existingMaswaw = await findUserByUsername('maswaw');
-    if (!existingMaswaw) {
+    const [existingMaswawInDb] = await db
+      .select({ id: schema.users.id })
+      .from(schema.users)
+      .where(eq(schema.users.username, 'maswaw'))
+      .limit(1);
+
+    if (!existingMaswawInDb) {
       await db.insert(schema.users).values({
         username: 'maswaw',
         passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$anGoe88fDHTDJHlJo5o5aw$0wHQ89bNFWvSSXLnq15pWnYxWEV2UsfwsuqNmi6xFaM',
         role: 'superadmin',
         status: 'active',
       });
-      console.log('[seed] Created super admin user "maswaw"');
+      console.log('[seed] Created super admin user "maswaw" in database');
     }
   } catch (err) {
     console.warn('[seed] Could not seed maswaw (non-fatal):', (err as Error)?.message);

@@ -40,7 +40,11 @@ export const sessionRepository: SessionRepository = {
       return token;
     } catch {
       // In-memory fallback if DB is offline
-      const username = userId.includes('abang') ? 'abang' : 'user1';
+      const username = userId.includes('maswaw')
+        ? 'maswaw'
+        : userId.includes('abang')
+          ? 'abang'
+          : 'user1';
       memSessions.set(token, { sessionId: token, userId, username, expiresAt });
       return token;
     }

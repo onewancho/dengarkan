@@ -76,6 +76,21 @@ export default function AdminAccountsPage() {
     setTimeout(() => setToastMessage(null), 2500);
   };
 
+  const extractErrorMessage = (err: unknown, fallback: string): string => {
+    if (
+      err &&
+      typeof err === "object" &&
+      "message" in err &&
+      typeof (err as { message?: unknown }).message === "string"
+    ) {
+      return (err as { message: string }).message;
+    }
+    if (err instanceof Error) {
+      return err.message;
+    }
+    return fallback;
+  };
+
   // Fetch accounts from API
   const fetchAccounts = useCallback(async () => {
     setIsLoading(true);
@@ -84,7 +99,7 @@ export default function AdminAccountsPage() {
       const res = await apiClient.admin.listUsers();
       setAccounts(res.users);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Gagal memuat daftar pengguna dari server.";
+      const msg = extractErrorMessage(err, "Gagal memuat daftar pengguna dari server.");
       setError(msg);
     } finally {
       setIsLoading(false);
@@ -149,7 +164,7 @@ export default function AdminAccountsPage() {
       setIsAddModalOpen(false);
       showToast(`Akun "${cleanUsername}" berhasil dibuat di database`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Gagal membuat akun.";
+      const msg = extractErrorMessage(err, "Gagal membuat akun.");
       alert(msg);
     } finally {
       setIsSubmitting(false);
@@ -189,7 +204,7 @@ export default function AdminAccountsPage() {
       setEditingAccount(null);
       showToast(`Akun "${cleanUsername}" berhasil diperbarui`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Gagal memperbarui akun.";
+      const msg = extractErrorMessage(err, "Gagal memperbarui akun.");
       alert(msg);
     } finally {
       setIsSubmitting(false);
@@ -215,7 +230,7 @@ export default function AdminAccountsPage() {
           : `Akun "${acc.username}" diaktifkan kembali`
       );
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Gagal mengubah status akun.";
+      const msg = extractErrorMessage(err, "Gagal mengubah status akun.");
       alert(msg);
     }
   };
@@ -239,7 +254,7 @@ export default function AdminAccountsPage() {
       showToast(`Akun "${deletingAccount.username}" berhasil dihapus dari database`);
       setDeletingAccount(null);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Gagal menghapus akun.";
+      const msg = extractErrorMessage(err, "Gagal menghapus akun.");
       alert(msg);
     } finally {
       setIsSubmitting(false);

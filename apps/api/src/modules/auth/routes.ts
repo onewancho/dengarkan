@@ -13,6 +13,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { loginSchema } from '@dengarkan/shared';
 import * as defaultServices from './service.js';
 import { authMiddleware } from '../../middleware/auth.js';
+import { parseDeviceFromUserAgent } from './device-parser.js';
 
 // ── User / Session shapes ─────────────────────────────────────────────────────
 
@@ -20,6 +21,10 @@ export interface UserRow {
   id: string;
   username: string;
   passwordHash: string;
+  role?: string;
+  status?: string;
+  lastLogin?: Date | null;
+  lastDevice?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -39,6 +44,7 @@ export interface AuthServices {
   createSession:      (userId: string) => Promise<string>;
   deleteSession:      (token: string) => Promise<void>;
   validateSession:    (token: string) => Promise<SessionRow | null>;
+  updateUserLastLoginAndDevice?: (userId: string, device: string) => Promise<void>;
 }
 
 export interface AuthRouteOptions {
@@ -90,11 +96,12 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (
   options
 ) => {
   const svc: AuthServices = {
-    findUserByUsername: options.services?.findUserByUsername ?? defaultServices.findUserByUsername,
-    verifyPassword:     options.services?.verifyPassword     ?? defaultServices.verifyPassword,
-    createSession:      options.services?.createSession      ?? defaultServices.createSession,
-    deleteSession:      options.services?.deleteSession      ?? defaultServices.deleteSession,
-    validateSession:    options.services?.validateSession    ?? defaultServices.validateSession,
+    findUserByUsername:           options.services?.findUserByUsername           ?? defaultServices.findUserByUsername,
+    verifyPassword:               options.services?.verifyPassword               ?? defaultServices.verifyPassword,
+    createSession:                options.services?.createSession                ?? defaultServices.createSession,
+    deleteSession:                options.services?.deleteSession                ?? defaultServices.deleteSession,
+    validateSession:              options.services?.validateSession              ?? defaultServices.validateSession,
+    updateUserLastLoginAndDevice: options.services?.updateUserLastLoginAndDevice ?? defaultServices.updateUserLastLoginAndDevice,
   };
 
   // ── Login — wrapped in its own scope so the rate limit applies only here ────
@@ -142,6 +149,22 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (
       const valid = await svc.verifyPassword(password, user.passwordHash);
       if (!valid) {
         return reply.status(401).send(AUTH_ERROR);
+      }
+
+      // Check if user account is suspended
+      if (user.status === 'suspended') {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'Akun Anda telah ditangguhkan. Silakan hubungi Super Admin.',
+          statusCode: 403,
+        });
+      }
+
+      // Sniff and record device from User-Agent
+      const ua = (request.headers['user-agent'] as string | undefined) ?? '';
+      const device = parseDeviceFromUserAgent(ua);
+      if (svc.updateUserLastLoginAndDevice) {
+        await svc.updateUserLastLoginAndDevice(user.id, device);
       }
 
       const token = await svc.createSession(user.id);

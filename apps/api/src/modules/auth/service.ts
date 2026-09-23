@@ -38,11 +38,27 @@ export async function verifyPassword(
   }
 }
 
-const DEV_USERS: Record<string, { id: string; username: string; passwordHash: string; createdAt: Date; updatedAt: Date }> = {
+export interface DevUserRecord {
+  id: string;
+  username: string;
+  passwordHash: string;
+  role: 'superadmin' | 'user';
+  status: 'active' | 'suspended';
+  lastLogin?: Date | null;
+  lastDevice?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const DEV_USERS: Record<string, DevUserRecord> = {
   abang: {
     id: 'user-abang-001',
     username: 'abang',
     passwordHash: process.env.AUTH_PASSWORD_HASH || '$argon2id$v=19$m=65536,t=3,p=4$anGoe88fDHTDJHlJo5o5aw$0wHQ89bNFWvSSXLnq15pWnYxWEV2UsfwsuqNmi6xFaM',
+    role: 'user',
+    status: 'active',
+    lastLogin: null,
+    lastDevice: null,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
   },
@@ -50,6 +66,10 @@ const DEV_USERS: Record<string, { id: string; username: string; passwordHash: st
     id: 'user-demo-001',
     username: 'user1',
     passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$acX1DE10ua3+fuMECl0RZQ$4IEE9NcuytJPIPecKqtyE6KGrGydnev1snwgnpuFC7s',
+    role: 'user',
+    status: 'active',
+    lastLogin: null,
+    lastDevice: null,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
   },
@@ -57,6 +77,10 @@ const DEV_USERS: Record<string, { id: string; username: string; passwordHash: st
     id: 'user-maswaw-001',
     username: 'maswaw',
     passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$anGoe88fDHTDJHlJo5o5aw$0wHQ89bNFWvSSXLnq15pWnYxWEV2UsfwsuqNmi6xFaM',
+    role: 'superadmin',
+    status: 'active',
+    lastLogin: null,
+    lastDevice: null,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
   },
@@ -74,4 +98,28 @@ export async function findUserByUsername(username: string) {
     // Database connection refused or offline — fall back to configured dev users
   }
   return DEV_USERS[username] ?? null;
+}
+
+export async function updateUserLastLoginAndDevice(userId: string, device: string): Promise<void> {
+  const now = new Date();
+  try {
+    await db
+      .update(schema.users)
+      .set({
+        lastLogin: now,
+        lastDevice: device,
+        updatedAt: now,
+      })
+      .where(eq(schema.users.id, userId));
+  } catch {
+    // Non-fatal if DB offline or in fallback mode
+  }
+
+  for (const key of Object.keys(DEV_USERS)) {
+    if (DEV_USERS[key].id === userId || DEV_USERS[key].username === userId) {
+      DEV_USERS[key].lastLogin = now;
+      DEV_USERS[key].lastDevice = device;
+      DEV_USERS[key].updatedAt = now;
+    }
+  }
 }

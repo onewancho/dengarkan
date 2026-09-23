@@ -145,20 +145,29 @@ export const apiClient = {
   },
 
   admin: {
-    listAccounts: (): Promise<{ accounts: AdminUserAccount[] }> =>
-      request("/api/admin/accounts"),
-    createAccount: (data: Partial<AdminUserAccount>): Promise<AdminUserAccount> =>
-      request("/api/admin/accounts", {
+    listUsers: (): Promise<{ users: AdminUserAccount[] }> =>
+      request("/api/admin/users"),
+    createUser: (data: {
+      username: string;
+      password: string;
+      role?: string;
+      status?: string;
+      device?: string;
+    }): Promise<{ user: AdminUserAccount }> =>
+      request("/api/admin/users", {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    updateAccount: (id: string, data: Partial<AdminUserAccount>): Promise<AdminUserAccount> =>
-      request(`/api/admin/accounts/${encodeURIComponent(id)}`, {
+    updateUser: (
+      id: string,
+      data: Partial<AdminUserAccount> & { password?: string; device?: string }
+    ): Promise<{ user: AdminUserAccount }> =>
+      request(`/api/admin/users/${encodeURIComponent(id)}`, {
         method: "PATCH",
         body: JSON.stringify(data),
       }),
-    deleteAccount: (id: string): Promise<void> =>
-      request(`/api/admin/accounts/${encodeURIComponent(id)}`, {
+    deleteUser: (id: string): Promise<{ success: boolean }> =>
+      request(`/api/admin/users/${encodeURIComponent(id)}`, {
         method: "DELETE",
       }),
   },
@@ -169,8 +178,7 @@ export interface AdminUserAccount {
   username: string;
   role: "superadmin" | "user";
   status: "active" | "suspended";
-  lastLogin: string;
-  activeDuration: string;
-  device: string;
+  lastLogin?: string | null;
+  lastDevice?: string | null;
   createdAt: string;
 }

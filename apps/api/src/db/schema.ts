@@ -22,6 +22,10 @@ export const users = pgTable(
     id: uuid('id').defaultRandom().primaryKey(),
     username: varchar('username', { length: 50 }).notNull().unique(),
     passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+    role: varchar('role', { length: 20 }).default('user').notNull(),
+    status: varchar('status', { length: 20 }).default('active').notNull(),
+    lastLogin: timestamp('last_login', { withTimezone: true }),
+    lastDevice: varchar('last_device', { length: 255 }),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),

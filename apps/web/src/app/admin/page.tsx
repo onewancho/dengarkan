@@ -3,57 +3,58 @@
 // ============================================
 // DENGARKAN — Super Admin: Manajemen Akun (/admin)
 //
-// Compact, Mobile-First Account Management:
+// Fullstack Database Integrated Account Management:
 //   • Layout 100% konsisten dengan TrackRow (Queue/History)
-//   • 4 Field Utama: Nama Akun (Bold), Last Login, Durasi, Perangkat/Browser
-//   • CRUD Lengkap: Tambah Akun, Edit Akun, Suspend/Aktifkan, Hapus Akun
-//   • Persistensi di localStorage ('dengarkan:admin_accounts')
+//   • Data bersumber langsung dari Database PostgreSQL via REST API
+//   • 4 Field Utama: Nama Akun (Bold), Last Login, Waktu Dibuat, Perangkat/Browser (User-Agent asli)
+//   • CRUD Lengkap: Tambah Akun (Argon2id Hashed), Edit Akun, Suspend/Aktifkan, Hapus Akun
 //   • Touch-friendly popover & dialog untuk iPhone 13 Safari & Chrome
 // ============================================
 
-import React, { useState, useEffect, useMemo } from "react";
-import type { AdminUserAccount } from "@/services/api-client";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { apiClient, type AdminUserAccount } from "@/services/api-client";
 
-const STORAGE_KEY = "dengarkan:admin_accounts";
+function formatLastLogin(dateStr?: string | null): string {
+  if (!dateStr) return "Belum pernah login";
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return "Belum pernah login";
 
-const INITIAL_ACCOUNTS: AdminUserAccount[] = [
-  {
-    id: "acc-1",
-    username: "abang",
-    role: "user",
-    status: "active",
-    lastLogin: "10 menit lalu",
-    activeDuration: "42 jam",
-    device: "iPhone 13 • Safari Mobile",
-    createdAt: "2026-01-01",
-  },
-  {
-    id: "acc-2",
-    username: "user1",
-    role: "user",
-    status: "active",
-    lastLogin: "2 hari lalu",
-    activeDuration: "5 jam",
-    device: "Android • Chrome Mobile",
-    createdAt: "2026-01-01",
-  },
-  {
-    id: "acc-3",
-    username: "maswaw",
-    role: "superadmin",
-    status: "active",
-    lastLogin: "Baru saja",
-    activeDuration: "1 jam",
-    device: "iPhone 13 • Chrome Mobile",
-    createdAt: "2026-01-01",
-  },
-];
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMinutes < 1) return "Baru saja";
+  if (diffMinutes < 60) return `${diffMinutes} mnt lalu`;
+  if (diffHours < 24) return `${diffHours} jam lalu`;
+  if (diffDays < 7) return `${diffDays} hari lalu`;
+
+  return date.toLocaleDateString("id-ID", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatCreatedAt(dateStr?: string | null): string {
+  if (!dateStr) return "-";
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return dateStr;
+  return date.toLocaleDateString("id-ID", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
 
 export default function AdminAccountsPage() {
   const [accounts, setAccounts] = useState<AdminUserAccount[]>([]);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Active Menu popover target
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
@@ -66,44 +67,33 @@ export default function AdminAccountsPage() {
   // Form states for Add / Edit
   const [formUsername, setFormUsername] = useState("");
   const [formPassword, setFormPassword] = useState("");
-  const [formDevice, setFormDevice] = useState("iPhone 13 • Safari Mobile");
+  const [formDevice, setFormDevice] = useState("iPhone 13 (Safari)");
   const [formRole, setFormRole] = useState<"user" | "superadmin">("user");
   const [formStatus, setFormStatus] = useState<"active" | "suspended">("active");
-
-  // Load from localStorage on mount
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setAccounts(parsed);
-          setIsLoaded(true);
-          return;
-        }
-      }
-    } catch {
-      // Fallback
-    }
-    setAccounts(INITIAL_ACCOUNTS);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_ACCOUNTS));
-    } catch {}
-    setIsLoaded(true);
-  }, []);
-
-  // Sync to localStorage
-  const saveAccounts = (newAccounts: AdminUserAccount[]) => {
-    setAccounts(newAccounts);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(newAccounts));
-    } catch {}
-  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 2500);
   };
+
+  // Fetch accounts from API
+  const fetchAccounts = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const res = await apiClient.admin.listUsers();
+      setAccounts(res.users);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Gagal memuat daftar pengguna dari server.";
+      setError(msg);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAccounts();
+  }, [fetchAccounts]);
 
   // Close 3-dots menu on outside click
   useEffect(() => {
@@ -124,7 +114,7 @@ export default function AdminAccountsPage() {
     return accounts.filter(
       (acc) =>
         acc.username.toLowerCase().includes(q) ||
-        acc.device.toLowerCase().includes(q) ||
+        (acc.lastDevice && acc.lastDevice.toLowerCase().includes(q)) ||
         acc.role.toLowerCase().includes(q) ||
         acc.status.toLowerCase().includes(q)
     );
@@ -134,36 +124,36 @@ export default function AdminAccountsPage() {
   const handleOpenAdd = () => {
     setFormUsername("");
     setFormPassword("");
-    setFormDevice("iPhone 13 • Safari Mobile");
+    setFormDevice("iPhone 13 (Safari)");
     setFormRole("user");
     setFormStatus("active");
     setIsAddModalOpen(true);
   };
 
-  const handleSubmitAdd = (e: React.FormEvent) => {
+  const handleSubmitAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanUsername = formUsername.trim();
-    if (!cleanUsername) return;
+    if (!cleanUsername || !formPassword) return;
 
-    if (accounts.some((a) => a.username.toLowerCase() === cleanUsername.toLowerCase())) {
-      alert("Username sudah digunakan. Silakan pilih username lain.");
-      return;
+    setIsSubmitting(true);
+    try {
+      const res = await apiClient.admin.createUser({
+        username: cleanUsername,
+        password: formPassword,
+        role: formRole,
+        status: formStatus,
+        device: formDevice.trim() || undefined,
+      });
+
+      setAccounts((prev) => [res.user, ...prev]);
+      setIsAddModalOpen(false);
+      showToast(`Akun "${cleanUsername}" berhasil dibuat di database`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Gagal membuat akun.";
+      alert(msg);
+    } finally {
+      setIsSubmitting(false);
     }
-
-    const newAcc: AdminUserAccount = {
-      id: `acc-${Date.now()}`,
-      username: cleanUsername,
-      role: formRole,
-      status: formStatus,
-      lastLogin: "Belum pernah",
-      activeDuration: "0 jam",
-      device: formDevice.trim() || "iPhone 13 • Safari Mobile",
-      createdAt: new Date().toISOString().split("T")[0],
-    };
-
-    saveAccounts([newAcc, ...accounts]);
-    setIsAddModalOpen(false);
-    showToast(`Akun "${cleanUsername}" berhasil ditambahkan`);
   };
 
   // Handle Edit Account
@@ -172,88 +162,89 @@ export default function AdminAccountsPage() {
     setEditingAccount(acc);
     setFormUsername(acc.username);
     setFormPassword("");
-    setFormDevice(acc.device);
+    setFormDevice(acc.lastDevice || "iPhone 13 (Safari)");
     setFormRole(acc.role);
     setFormStatus(acc.status);
   };
 
-  const handleSubmitEdit = (e: React.FormEvent) => {
+  const handleSubmitEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingAccount) return;
     const cleanUsername = formUsername.trim();
     if (!cleanUsername) return;
 
-    // Check duplicate username if changed
-    if (
-      cleanUsername.toLowerCase() !== editingAccount.username.toLowerCase() &&
-      accounts.some((a) => a.username.toLowerCase() === cleanUsername.toLowerCase())
-    ) {
-      alert("Username sudah digunakan.");
-      return;
+    setIsSubmitting(true);
+    try {
+      const res = await apiClient.admin.updateUser(editingAccount.id, {
+        username: cleanUsername,
+        role: formRole,
+        status: formStatus,
+        device: formDevice.trim() || undefined,
+        ...(formPassword.trim() ? { password: formPassword.trim() } : {}),
+      });
+
+      setAccounts((prev) =>
+        prev.map((a) => (a.id === editingAccount.id ? res.user : a))
+      );
+      setEditingAccount(null);
+      showToast(`Akun "${cleanUsername}" berhasil diperbarui`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Gagal memperbarui akun.";
+      alert(msg);
+    } finally {
+      setIsSubmitting(false);
     }
-
-    const updated = accounts.map((a) => {
-      if (a.id === editingAccount.id) {
-        return {
-          ...a,
-          username: cleanUsername,
-          role: formRole,
-          status: formStatus,
-          device: formDevice.trim() || a.device,
-        };
-      }
-      return a;
-    });
-
-    saveAccounts(updated);
-    setEditingAccount(null);
-    showToast(`Akun "${cleanUsername}" berhasil diperbarui`);
   };
 
   // Handle Toggle Suspend
-  const handleToggleSuspend = (acc: AdminUserAccount) => {
+  const handleToggleSuspend = async (acc: AdminUserAccount) => {
     setActiveMenuId(null);
     if (acc.username.toLowerCase() === "maswaw") {
-      alert("Akun Super Admin utama tidak dapat ditangguhkan.");
+      alert("Akun Super Admin utama (maswaw) tidak dapat ditangguhkan.");
       return;
     }
     const nextStatus: "active" | "suspended" = acc.status === "active" ? "suspended" : "active";
-    const updated = accounts.map((a) =>
-      a.id === acc.id ? { ...a, status: nextStatus } : a
-    );
-    saveAccounts(updated);
-    showToast(
-      nextStatus === "suspended"
-        ? `Akun "${acc.username}" ditangguhkan`
-        : `Akun "${acc.username}" diaktifkan kembali`
-    );
+    try {
+      const res = await apiClient.admin.updateUser(acc.id, { status: nextStatus });
+      setAccounts((prev) =>
+        prev.map((a) => (a.id === acc.id ? res.user : a))
+      );
+      showToast(
+        nextStatus === "suspended"
+          ? `Akun "${acc.username}" ditangguhkan`
+          : `Akun "${acc.username}" diaktifkan kembali`
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Gagal mengubah status akun.";
+      alert(msg);
+    }
   };
 
   // Handle Delete
   const handleOpenDelete = (acc: AdminUserAccount) => {
     setActiveMenuId(null);
     if (acc.username.toLowerCase() === "maswaw") {
-      alert("Akun Super Admin utama tidak dapat dihapus.");
+      alert("Akun Super Admin utama (maswaw) tidak dapat dihapus.");
       return;
     }
     setDeletingAccount(acc);
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!deletingAccount) return;
-    const updated = accounts.filter((a) => a.id !== deletingAccount.id);
-    saveAccounts(updated);
-    showToast(`Akun "${deletingAccount.username}" berhasil dihapus`);
-    setDeletingAccount(null);
+    setIsSubmitting(true);
+    try {
+      await apiClient.admin.deleteUser(deletingAccount.id);
+      setAccounts((prev) => prev.filter((a) => a.id !== deletingAccount.id));
+      showToast(`Akun "${deletingAccount.username}" berhasil dihapus dari database`);
+      setDeletingAccount(null);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Gagal menghapus akun.";
+      alert(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
-
-  if (!isLoaded) {
-    return (
-      <div className="py-20 flex justify-center">
-        <div className="w-5 h-5 border-2 border-[#39FF14] border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
 
   const activeCount = accounts.filter((a) => a.status === "active").length;
   const suspendedCount = accounts.filter((a) => a.status === "suspended").length;
@@ -277,7 +268,7 @@ export default function AdminAccountsPage() {
             Manajemen Akun
           </h1>
           <p className="text-xs text-[#8E8E93] mt-0.5">
-            Kelola akses, aktivitas login, dan perangkat pengguna
+            Database PostgreSQL • Pelacakan Perangkat Login Otomatis
           </p>
         </div>
 
@@ -339,9 +330,27 @@ export default function AdminAccountsPage() {
         )}
       </div>
 
+      {/* Error state */}
+      {error && (
+        <div className="p-4 rounded-xl bg-[#FF3B30]/15 border border-[#FF3B30]/30 text-white text-xs flex items-center justify-between gap-3">
+          <span>{error}</span>
+          <button
+            onClick={fetchAccounts}
+            className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold"
+          >
+            Coba Lagi
+          </button>
+        </div>
+      )}
+
       {/* Account List (Identical to TrackRow styling) */}
       <div className="space-y-1.5" role="list">
-        {filteredAccounts.length === 0 ? (
+        {isLoading ? (
+          <div className="py-16 flex flex-col items-center justify-center gap-3">
+            <div className="w-6 h-6 border-2 border-[#39FF14] border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs text-[#8E8E93]">Memuat data pengguna dari database…</span>
+          </div>
+        ) : filteredAccounts.length === 0 ? (
           <div className="text-center py-12 px-4 rounded-xl border border-dashed border-white/10">
             <p className="text-sm text-[#8E8E93]">Tidak ada akun yang sesuai dengan pencarian.</p>
           </div>
@@ -394,20 +403,20 @@ export default function AdminAccountsPage() {
                     )}
                   </div>
 
-                  {/* Field 2 & 3: Last Login & Durasi Aktif */}
+                  {/* Field 2 & 3: Last Login & Dibuat Pada */}
                   <div className="flex items-center gap-2 mt-0.5 text-[11px] text-[#8E8E93] truncate">
-                    <span>Login: {account.lastLogin}</span>
+                    <span>Login: {formatLastLogin(account.lastLogin)}</span>
                     <span>•</span>
-                    <span>Aktif: {account.activeDuration}</span>
+                    <span>Dibuat: {formatCreatedAt(account.createdAt)}</span>
                   </div>
 
-                  {/* Field 4: Perangkat / Browser (Neon accent) */}
+                  {/* Field 4: Perangkat / Browser (User-Agent asli dari database) */}
                   <div className="mt-0.5 text-[11px] text-[#39FF14]/85 font-mono truncate flex items-center gap-1">
                     <svg className="w-3 h-3 flex-shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
                       <line x1="12" y1="18" x2="12.01" y2="18" />
                     </svg>
-                    <span>{account.device}</span>
+                    <span>{account.lastDevice || "Belum ada riwayat perangkat"}</span>
                   </div>
                 </div>
 
@@ -517,14 +526,14 @@ export default function AdminAccountsPage() {
                   required
                   value={formUsername}
                   onChange={(e) => setFormUsername(e.target.value)}
-                  placeholder="misal: user_baru"
+                  placeholder="misal: abang_baru"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[#202024] border border-white/10 text-white text-xs focus:outline-none focus:border-[#39FF14]"
                 />
               </div>
 
               <div>
                 <label className="block text-[11px] font-medium text-[#8E8E93] uppercase mb-1">
-                  Password
+                  Password (Akan di-hash Argon2id di Server)
                 </label>
                 <input
                   type="password"
@@ -538,13 +547,13 @@ export default function AdminAccountsPage() {
 
               <div>
                 <label className="block text-[11px] font-medium text-[#8E8E93] uppercase mb-1">
-                  Perangkat / Browser
+                  Perangkat / Deskripsi Awal
                 </label>
                 <input
                   type="text"
                   value={formDevice}
                   onChange={(e) => setFormDevice(e.target.value)}
-                  placeholder="misal: iPhone 13 • Safari Mobile"
+                  placeholder="misal: iPhone 13 (Safari)"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[#202024] border border-white/10 text-white text-xs focus:outline-none focus:border-[#39FF14]"
                 />
               </div>
@@ -583,15 +592,17 @@ export default function AdminAccountsPage() {
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-[#8E8E93] hover:text-white font-medium text-xs transition-default cursor-pointer"
+                  disabled={isSubmitting}
+                  className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-[#8E8E93] hover:text-white font-medium text-xs transition-default cursor-pointer disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 rounded-xl bg-[#39FF14] hover:bg-[#57FF38] text-black font-bold text-xs transition-default shadow-md glow-brand cursor-pointer"
+                  disabled={isSubmitting}
+                  className="flex-1 py-2.5 rounded-xl bg-[#39FF14] hover:bg-[#57FF38] text-black font-bold text-xs transition-default shadow-md glow-brand cursor-pointer disabled:opacity-50"
                 >
-                  Simpan Akun
+                  {isSubmitting ? "Menyimpan…" : "Simpan ke DB"}
                 </button>
               </div>
             </form>
@@ -638,7 +649,7 @@ export default function AdminAccountsPage() {
                   type="password"
                   value={formPassword}
                   onChange={(e) => setFormPassword(e.target.value)}
-                  placeholder="Kosongkan jika tidak diubah"
+                  placeholder="Kosongkan jika tidak ingin mengubah"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[#202024] border border-white/10 text-white text-xs focus:outline-none focus:border-[#39FF14]"
                 />
               </div>
@@ -689,15 +700,17 @@ export default function AdminAccountsPage() {
                 <button
                   type="button"
                   onClick={() => setEditingAccount(null)}
-                  className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-[#8E8E93] hover:text-white font-medium text-xs transition-default cursor-pointer"
+                  disabled={isSubmitting}
+                  className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-[#8E8E93] hover:text-white font-medium text-xs transition-default cursor-pointer disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 rounded-xl bg-[#39FF14] hover:bg-[#57FF38] text-black font-bold text-xs transition-default shadow-md glow-brand cursor-pointer"
+                  disabled={isSubmitting}
+                  className="flex-1 py-2.5 rounded-xl bg-[#39FF14] hover:bg-[#57FF38] text-black font-bold text-xs transition-default shadow-md glow-brand cursor-pointer disabled:opacity-50"
                 >
-                  Perbarui
+                  {isSubmitting ? "Menyimpan…" : "Perbarui DB"}
                 </button>
               </div>
             </form>
@@ -720,7 +733,7 @@ export default function AdminAccountsPage() {
               <div>
                 <h3 className="text-sm font-bold text-white">Hapus Akun Pengguna?</h3>
                 <p className="text-xs text-[#8E8E93] mt-0.5">
-                  Akun <strong className="text-white font-semibold">"{deletingAccount.username}"</strong> akan dihapus permanen dari daftar akses.
+                  Akun <strong className="text-white font-semibold">"{deletingAccount.username}"</strong> akan dihapus permanen dari database.
                 </p>
               </div>
             </div>
@@ -729,16 +742,18 @@ export default function AdminAccountsPage() {
               <button
                 type="button"
                 onClick={() => setDeletingAccount(null)}
-                className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-[#8E8E93] hover:text-white font-medium text-xs transition-default cursor-pointer"
+                disabled={isSubmitting}
+                className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-[#8E8E93] hover:text-white font-medium text-xs transition-default cursor-pointer disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="button"
                 onClick={handleConfirmDelete}
-                className="flex-1 py-2.5 rounded-xl bg-[#FF3B30] hover:bg-[#FF453A] text-white font-bold text-xs transition-default shadow-md cursor-pointer"
+                disabled={isSubmitting}
+                className="flex-1 py-2.5 rounded-xl bg-[#FF3B30] hover:bg-[#FF453A] text-white font-bold text-xs transition-default shadow-md cursor-pointer disabled:opacity-50"
               >
-                Hapus Permanen
+                {isSubmitting ? "Menghapus…" : "Hapus Permanen"}
               </button>
             </div>
           </div>

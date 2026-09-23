@@ -14,6 +14,7 @@ import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
 
 import { authRoutes }     from '../modules/auth/routes.js';
+import { adminRoutes }    from '../modules/admin/routes.js';
 import { youtubeRoutes }  from '../modules/youtube/routes.js';
 import { audioRoutes }    from '../modules/audio/routes.js';
 import { playlistRoutes } from '../modules/playlists/routes.js';
@@ -149,6 +150,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   // ── Routes ─────────────────────────────────────────────────────────────────
   await app.register(authRoutes);
+  await app.register(adminRoutes);
   await app.register(youtubeRoutes);
   await app.register(audioRoutes);
   await app.register(playlistRoutes);

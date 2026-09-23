@@ -560,7 +560,10 @@ export function AudioPlayer() {
                     seek(val);
                   }
                 }}
-                className="w-full h-2 rounded-full appearance-none cursor-pointer bg-[#222226] accent-[#39FF14] focus:outline-none"
+                className="w-full h-2 rounded-full appearance-none cursor-pointer accent-[#39FF14] focus:outline-none"
+                style={{
+                  background: "linear-gradient(to right, #39FF14 0%, #39FF14 var(--progress, 0%), #222226 var(--progress, 0%), #222226 100%)",
+                }}
                 aria-label="Seek musik"
               />
               {/* Timestamps & Quick Seek Buttons */}

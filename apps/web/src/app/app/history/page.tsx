@@ -13,9 +13,6 @@ import { usePlaylistContext } from "@/features/playlists/context";
 import { parseTrackMeta } from "@/lib/track-meta";
 import type { PlayableTrack } from "@/features/player/context";
 
-const HISTORY_STORAGE_KEY = "dengarkan:play_history";
-const MAX_HISTORY = 100;
-
 function formatDuration(s: number): string {
   const m = Math.floor(s / 60);
   const sec = s % 60;
@@ -307,61 +304,24 @@ function ActionMenu({
 
 // ── History Page Main Component ─────────────────────────────────────────────
 export default function HistoryPage() {
-  const { currentTrack, isPlaying, playTrack, addToQueue } = usePlayer();
-  const [historyList, setHistoryList] = useState<PlayableTrack[]>([]);
+  const { currentTrack, isPlaying, playTrack, addToQueue, historyList, clearHistory, removeHistory } = usePlayer();
   const [modalTrack, setModalTrack] = useState<PlayableTrack | null>(null);
 
-  // 1. Initial load from localStorage
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(HISTORY_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored) as PlayableTrack[];
-        if (Array.isArray(parsed)) {
-          setHistoryList(parsed);
-        }
-      }
-    } catch {
-      // ignore JSON parse error
-    }
-  }, []);
-
-  // 2. Automatically sync newly played track to history
-  useEffect(() => {
-    if (!currentTrack || !currentTrack.videoId) return;
-
-    setHistoryList((prev) => {
-      const filtered = prev.filter((t) => t.videoId !== currentTrack.videoId);
-      const next = [currentTrack, ...filtered].slice(0, MAX_HISTORY);
-      try {
-        localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // ignore localStorage quota error
-      }
-      return next;
-    });
-  }, [currentTrack]);
-
-  // Persist updated list helper
-  const saveHistoryList = (newList: PlayableTrack[]) => {
-    setHistoryList(newList);
-    try {
-      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(newList));
-    } catch {}
-  };
+  // History state, localStorage sync, and persistence are now owned globally
+  // by PlayerProvider (features/player/context.tsx) so history is captured
+  // even when this page is not mounted. This page only consumes the data.
 
   // Clear all history
   const handleClearHistory = () => {
     if (historyList.length === 0) return;
     if (window.confirm("Apakah Anda yakin ingin menghapus seluruh riwayat pemutaran?")) {
-      saveHistoryList([]);
+      clearHistory();
     }
   };
 
   // Remove individual track from history
   const handleRemoveTrack = (videoId: string) => {
-    const next = historyList.filter((t) => t.videoId !== videoId);
-    saveHistoryList(next);
+    removeHistory(videoId);
   };
 
   // Click track to Play Next (starts track now, keeps existing queue next)

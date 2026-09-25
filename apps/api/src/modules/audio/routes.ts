@@ -10,6 +10,9 @@
 // ============================================
 
 import type { FastifyPluginAsync } from 'fastify';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
+import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
 import { videoIdSchema } from '@dengarkan/shared';
 import { authMiddleware } from '../../middleware/auth.js';
 import { audioResolver } from './resolver.js';
@@ -26,6 +29,13 @@ import {
   resolverErrorStatus,
   resolverErrorMessage,
 } from './errors.js';
+
+// Max bytes proxied per request. Small bounded ranges avoid CDN throttling
+// and cap per-connection memory; the browser fetches subsequent ranges.
+const STREAM_RANGE_CAP = Math.max(
+  256 * 1024,
+  parseInt(process.env.STREAM_RANGE_CAP || '', 10) || 10 * 1024 * 1024,
+);
 
 // ── Error handler helper ──────────────────────────────────────────────────────
 
@@ -106,17 +116,53 @@ export const audioRoutes: FastifyPluginAsync = async (app) => {
         return sendResolverError(err, reply, request.log);
       }
 
+      // ── Range normalization ────────────────────────────────────────────────
+      // Open-ended / missing ranges get capped so googlevideo never throttles
+      // us and the server never pulls a whole file. The browser requests the
+      // next range itself (standard HTTP 206 media behaviour).
       const rangeHeader = request.headers['range'];
-      const fetchHeaders: Record<string, string> = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.youtube.com/',
+      let start = 0;
+      let end = STREAM_RANGE_CAP - 1;
+      if (typeof rangeHeader === 'string' && rangeHeader.length > 0) {
+        const m = /^bytes=(\d{1,15})-(\d{0,15})$/.exec(rangeHeader.trim());
+        if (!m) {
+          return reply.status(416).send({
+            error: 'Range Not Satisfiable', message: 'Invalid Range header', statusCode: 416,
+          });
+        }
+        start = parseInt(m[1], 10);
+        const reqEnd = m[2] ? parseInt(m[2], 10) : Number.POSITIVE_INFINITY;
+        if (reqEnd < start) {
+          return reply.status(416).send({
+            error: 'Range Not Satisfiable', message: 'Invalid Range header', statusCode: 416,
+          });
+        }
+        end = Math.min(reqEnd, start + STREAM_RANGE_CAP - 1);
+      }
+
+      // Abort upstream fetch as soon as the client goes away (seek / close).
+      const abort = new AbortController();
+      const onClose = () => abort.abort();
+      request.raw.once('close', onClose);
+      reply.raw.once('close', onClose);
+      const cleanup = () => {
+        request.raw.off('close', onClose);
+        reply.raw.off('close', onClose);
       };
-      if (rangeHeader) fetchHeaders['Range'] = rangeHeader;
 
       let cdnRes: Response;
       try {
-        cdnRes = await fetch(stream.streamUrl, { headers: fetchHeaders });
+        cdnRes = await fetch(stream.streamUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.youtube.com/',
+            'Range': `bytes=${start}-${end}`,
+          },
+          signal: abort.signal,
+        });
       } catch (err) {
+        cleanup();
+        if (abort.signal.aborted) return reply;
         request.log.error({ err }, 'Failed to fetch CDN stream');
         return reply.status(502).send({
           error: 'STREAM_PROXY_ERROR',
@@ -125,7 +171,20 @@ export const audioRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      if (!cdnRes.ok && cdnRes.status !== 206) {
+      if (cdnRes.status === 416) {
+        cleanup();
+        void cdnRes.body?.cancel().catch(() => {});
+        const cr = cdnRes.headers.get('Content-Range');
+        if (cr) reply.header('Content-Range', cr);
+        return reply.status(416).send({
+          error: 'Range Not Satisfiable', message: 'Requested range not satisfiable', statusCode: 416,
+        });
+      }
+
+      if (!cdnRes.ok) {
+        cleanup();
+        // Always release the undici body so the socket/buffers are freed.
+        void cdnRes.body?.cancel().catch(() => {});
         // CDN URL expired — evict cache and tell client to retry
         void audioResolver.invalidate(parsed.data);
         return reply.status(503).send({
@@ -135,50 +194,38 @@ export const audioRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      reply.status(cdnRes.status);
-      reply.header('Content-Type', cdnRes.headers.get('Content-Type') || stream.mimeType);
-      reply.header('Cache-Control', 'no-cache');
-      reply.header('Access-Control-Allow-Origin', '*');
-      const contentLength = cdnRes.headers.get('Content-Length');
-      if (contentLength) reply.header('Content-Length', contentLength);
-      const contentRange = cdnRes.headers.get('Content-Range');
-      if (contentRange) reply.header('Content-Range', contentRange);
-      reply.header('Accept-Ranges', 'bytes');
-
-      if (!cdnRes.body) {
-        return reply.send(Buffer.alloc(0));
-      }
-
-      // Stream body chunks directly to client
-      const reader = cdnRes.body.getReader();
-      const rawReply = reply.raw;
-      reply.hijack();
-      rawReply.writeHead(cdnRes.status, {
+      const headers: Record<string, string> = {
         'Content-Type': cdnRes.headers.get('Content-Type') || stream.mimeType,
         'Cache-Control': 'no-cache',
         'Access-Control-Allow-Origin': '*',
         'Accept-Ranges': 'bytes',
-        ...(contentLength ? { 'Content-Length': contentLength } : {}),
-        ...(contentRange ? { 'Content-Range': contentRange } : {}),
-      });
+      };
+      const contentLength = cdnRes.headers.get('Content-Length');
+      if (contentLength) headers['Content-Length'] = contentLength;
+      const contentRange = cdnRes.headers.get('Content-Range');
+      if (contentRange) headers['Content-Range'] = contentRange;
 
-      rawReply.on('close', () => {
-        if (!rawReply.writableEnded) {
-          reader.cancel().catch(() => {});
-        }
-      });
+      reply.hijack();
+      reply.raw.writeHead(cdnRes.status, headers);
 
+      if (!cdnRes.body) {
+        cleanup();
+        reply.raw.end();
+        return;
+      }
+
+      // pipeline(): native backpressure + destroys both sides on close/error.
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done || rawReply.destroyed || rawReply.writableEnded) break;
-          rawReply.write(value);
-        }
-      } catch {
-        // client disconnected
+        await pipeline(
+          Readable.fromWeb(cdnRes.body as unknown as NodeWebReadableStream<Uint8Array>),
+          reply.raw,
+        );
+      } catch (err) {
+        // ERR_STREAM_PREMATURE_CLOSE / AbortError on client seek is expected.
+        if (!abort.signal.aborted) request.log.warn({ err }, 'Audio stream pipeline ended with error');
+        abort.abort();
       } finally {
-        reader.cancel().catch(() => {});
-        if (!rawReply.destroyed && !rawReply.writableEnded) rawReply.end();
+        cleanup();
       }
     }
   );

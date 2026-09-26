@@ -264,3 +264,78 @@ export const TRENDING_INTERESTS = {
   genres: ['Pop Indonesia', 'Rock', 'Dangdut', 'K-Pop', 'Jazz', 'Lo-fi', 'Hip-Hop', 'Indie', 'EDM'],
 };
 
+// ── Dynamic trending from YouTube charts (6h cache, static fallback) ──────────
+const CHART_PLAYLISTS = [
+  process.env.YT_TRENDING_PLAYLIST_ID || 'PL4fGSI1pDJn5ObxTlEPlkkornHXUiKX1z', // Top Indonesia
+  process.env.YT_TRENDING_GLOBAL_PLAYLIST_ID || 'PL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i', // Top Global
+];
+const TRENDING_TTL_MS = 6 * 60 * 60 * 1000;
+let trendingCache: { data: typeof TRENDING_INTERESTS; expiresAt: number } | null = null;
+let trendingInflight: Promise<typeof TRENDING_INTERESTS> | null = null;
+
+function cleanChartTitle(title: string): string {
+  return title
+    .replace(/\s*[([【].*?[)\]】]/g, '')
+    .replace(/\s*\|.*$/, '')
+    .replace(/\s+(ft\.?|feat\.?)\s[^-]*/i, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, 60);
+}
+
+async function fetchChartTitles(playlistId: string, limit: number): Promise<string[]> {
+  const ytdlpPath = process.env.YT_DLP_PATH || process.env.YTDLP_PATH || 'yt-dlp';
+  const { stdout } = await execFileAsync(
+    ytdlpPath,
+    [
+      '--dump-single-json', '--flat-playlist', '--no-warnings',
+      '--socket-timeout', '10', '--playlist-end', String(limit),
+      `https://www.youtube.com/playlist?list=${playlistId}`,
+    ],
+    { maxBuffer: 10 * 1024 * 1024, timeout: 20000 }
+  );
+  const data = JSON.parse(stdout);
+  const entries: any[] = Array.isArray(data.entries) ? data.entries : [];
+  return entries
+    .map((e) => (typeof e?.title === 'string' ? cleanChartTitle(e.title) : ''))
+    .filter((t) => t.length > 1);
+}
+
+async function buildTrending(): Promise<typeof TRENDING_INTERESTS> {
+  const settled = await Promise.allSettled([
+    fetchChartTitles(CHART_PLAYLISTS[0], 6),
+    fetchChartTitles(CHART_PLAYLISTS[1], 4),
+  ]);
+  const seen = new Set<string>();
+  const trending: string[] = [];
+  for (const r of settled) {
+    if (r.status !== 'fulfilled') continue;
+    for (const t of r.value) {
+      const k = t.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      trending.push(t);
+    }
+  }
+  return {
+    trending: trending.length > 0 ? trending.slice(0, 8) : TRENDING_INTERESTS.trending,
+    genres: TRENDING_INTERESTS.genres,
+  };
+}
+
+export async function getTrendingInterests(): Promise<typeof TRENDING_INTERESTS> {
+  if (trendingCache && Date.now() < trendingCache.expiresAt) return trendingCache.data;
+  if (!trendingInflight) {
+    trendingInflight = buildTrending()
+      .then((data) => {
+        const isDynamic = data.trending !== TRENDING_INTERESTS.trending;
+        // Cache fallback only briefly (5 min) so we retry charts soon
+        trendingCache = { data, expiresAt: Date.now() + (isDynamic ? TRENDING_TTL_MS : 5 * 60 * 1000) };
+        return data;
+      })
+      .catch(() => TRENDING_INTERESTS)
+      .finally(() => { trendingInflight = null; });
+  }
+  return trendingInflight;
+}
+

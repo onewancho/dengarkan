@@ -5,7 +5,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { searchQuerySchema } from '@dengarkan/shared';
 import { authMiddleware } from '../../middleware/auth.js';
-import { searchTracks, relatedTracks, TRENDING_INTERESTS } from './service.js';
+import { searchTracks, relatedTracks, getTrendingInterests } from './service.js';
 
 export const youtubeRoutes: FastifyPluginAsync = async (app) => {
   // GET /api/youtube/search?q=query
@@ -63,5 +63,5 @@ export const youtubeRoutes: FastifyPluginAsync = async (app) => {
   );
 
   // GET /api/youtube/trending
-  app.get('/api/youtube/trending', { preHandler: [authMiddleware] }, async () => TRENDING_INTERESTS);
+  app.get('/api/youtube/trending', { preHandler: [authMiddleware] }, async () => getTrendingInterests());
 };

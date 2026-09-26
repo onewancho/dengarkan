@@ -54,6 +54,7 @@ import {
   audioCacheRepository,
 } from '../../infrastructure/repositories/audio-cache.repository.js';
 import { withRetry } from '../../lib/retry.js';
+import { systemLog } from '../../common/system-log.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -327,7 +328,9 @@ class YouTubeAudioResolver implements AudioResolver {
       if (e.killed || e.signal === 'SIGTERM') {
         throw new ResolverError('RESOLVER_FAILED', `yt-dlp timed out after ${YTDLP_TIMEOUT_MS}ms`);
       }
-      throw classifyYtdlpError(e.stderr || e.message || '', typeof e.exitCode === 'number' ? e.exitCode : null);
+      const classified = classifyYtdlpError(e.stderr || e.message || '', typeof e.exitCode === 'number' ? e.exitCode : null);
+      systemLog.warn('YTDLP', `yt-dlp error for ${videoId} [${classified.code}]: ${classified.message}`);
+      throw classified;
     }
 
     let data: YtdlpOutput;
@@ -338,6 +341,7 @@ class YouTubeAudioResolver implements AudioResolver {
     }
 
     const stream = buildStream(videoId, data);
+    systemLog.info('YTDLP', `Stream resolved for ${videoId} (${stream.durationSeconds}s, ${stream.mimeType})`);
 
     // Write to both caches (L2 write is async — don't block the response)
     this.l1.set(videoId, stream);

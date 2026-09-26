@@ -16,6 +16,7 @@ import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
 import { videoIdSchema } from '@dengarkan/shared';
 import { authMiddleware } from '../../middleware/auth.js';
 import { audioResolver } from './resolver.js';
+import { systemLog } from '../../common/system-log.js';
 import { generateHlsPlaylist, streamHlsSegment, type HlsTrack } from './hls.service.js';
 import {
   streamContinuousQueue,
@@ -137,6 +138,7 @@ export const audioRoutes: FastifyPluginAsync = async (app) => {
           error: 'Bad Request', message: 'Invalid YouTube video ID', statusCode: 400,
         });
       }
+      systemLog.info('AUDIO_ROUTING', `10MB Proxy: ${parsed.data} [range=${request.headers.range || 'full'}]`);
 
       let stream;
       try {
@@ -475,6 +477,7 @@ export const audioRoutes: FastifyPluginAsync = async (app) => {
           error: 'Bad Request', message: 'Invalid YouTube video ID', statusCode: 400,
         });
       }
+      systemLog.info('AUDIO_ROUTING', `Native HLS .m3u8: ${parsed.data}`);
 
       const token = request.cookies?.session_token || (request.query as { token?: string }).token;
       try {

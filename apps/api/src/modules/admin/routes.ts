@@ -15,6 +15,7 @@ import { eq, desc } from 'drizzle-orm';
 import { db, schema } from '../../infrastructure/database/index.js';
 import { authMiddleware } from '../../middleware/auth.js';
 import { hashPassword, DEV_USERS, findUserByUsername } from '../auth/service.js';
+import { systemLog } from '../../common/system-log.js';
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
   // 1. All admin routes require a valid session
@@ -304,5 +305,13 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     }
 
     return reply.status(200).send({ success: true, message: 'Akun berhasil dihapus.' });
+  });
+
+  // ── GET /api/admin/system-logs ───────────────────────────────────────────
+  app.get('/api/admin/system-logs', async (_request, reply) => {
+    return reply.status(200).send({
+      logs: systemLog.getLogs(),
+      metrics: systemLog.getMetrics(),
+    });
   });
 };

@@ -174,6 +174,10 @@ export const apiClient = {
       request(`/api/admin/users/${encodeURIComponent(id)}`, {
         method: "DELETE",
       }),
+    getSystemLogs: (): Promise<{
+      logs: AdminSystemLogEntry[];
+      metrics: AdminSystemMetrics;
+    }> => request("/api/admin/system-logs"),
   },
 };
 
@@ -185,4 +189,20 @@ export interface AdminUserAccount {
   lastLogin?: string | null;
   lastDevice?: string | null;
   createdAt: string;
+}
+
+export interface AdminSystemLogEntry {
+  id: number;
+  timestamp: string;
+  level: "info" | "warn" | "error";
+  tag: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface AdminSystemMetrics {
+  rssMb: number;
+  heapUsedMb: number;
+  heapTotalMb: number;
+  uptimeSec: number;
 }

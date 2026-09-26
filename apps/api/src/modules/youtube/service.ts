@@ -8,6 +8,7 @@ import { resolve as pathResolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { SearchResponse, SearchResult } from '@dengarkan/shared';
 import ytSearch from 'yt-search';
+import { systemLog } from '../../common/system-log.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -149,6 +150,7 @@ export async function searchTracks(query: string): Promise<SearchResponse> {
   } catch (err: any) {
     // yt-search failed (e.g. TypeError: title.trim is not a function or timeout)
     // Seamlessly fallback to yt-dlp
+    systemLog.warn('YTDLP', `yt-search fallback to yt-dlp: "${cleanQuery}"`);
     results = [];
   }
 
@@ -158,6 +160,7 @@ export async function searchTracks(query: string): Promise<SearchResponse> {
       results = await searchWithYtDlp(cleanQuery, 20);
     } catch (fallbackErr: any) {
       // Both scrapers failed, return empty or throw if absolutely necessary
+      systemLog.error('YTDLP', `Search failed for "${cleanQuery}": ${fallbackErr?.message || 'unknown error'}`);
       results = [];
     }
   }
@@ -306,6 +309,7 @@ async function buildTrending(): Promise<typeof TRENDING_INTERESTS> {
   const trending: string[] = [];
 
   try {
+    systemLog.info('TRENDING', 'Refreshing Indonesia chart (10m TTL)...');
     const titles = await fetchChartTitles(INDONESIA_CHART_PLAYLIST_ID, 10);
     for (const t of titles) {
       const k = t.toLowerCase();
@@ -314,8 +318,10 @@ async function buildTrending(): Promise<typeof TRENDING_INTERESTS> {
         trending.push(t);
       }
     }
+    systemLog.info('TRENDING', `Chart refreshed: ${trending.length} tracks loaded`);
   } catch {
     // Non-fatal: fallback below
+    systemLog.warn('TRENDING', 'Failed to fetch Indonesia chart playlist, falling back to static');
   }
 
   return {

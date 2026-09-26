@@ -12,7 +12,12 @@
 // ============================================
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { apiClient, type AdminUserAccount } from "@/services/api-client";
+import {
+  apiClient,
+  type AdminUserAccount,
+  type AdminSystemLogEntry,
+  type AdminSystemMetrics,
+} from "@/services/api-client";
 
 function formatLastLogin(dateStr?: string | null): string {
   if (!dateStr) return "Belum pernah login";
@@ -48,13 +53,32 @@ function formatCreatedAt(dateStr?: string | null): string {
   });
 }
 
+function formatUptime(sec: number): string {
+  const hours = Math.floor(sec / 3600);
+  const minutes = Math.floor((sec % 3600) / 60);
+  const seconds = sec % 60;
+  if (hours > 0) return `${hours}j ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
 export default function AdminAccountsPage() {
+  const [activeTab, setActiveTab] = useState<"accounts" | "logs">("accounts");
+
   const [accounts, setAccounts] = useState<AdminUserAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Live System Logs State
+  const [logs, setLogs] = useState<AdminSystemLogEntry[]>([]);
+  const [metrics, setMetrics] = useState<AdminSystemMetrics | null>(null);
+  const [isLogsLoading, setIsLogsLoading] = useState(false);
+  const [logLevelFilter, setLogLevelFilter] = useState<"ALL" | "INFO" | "WARN" | "ERROR">("ALL");
+  const [autoScroll, setAutoScroll] = useState(true);
+  const terminalEndRef = React.useRef<HTMLDivElement>(null);
 
   // Active Menu popover target
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
@@ -109,6 +133,41 @@ export default function AdminAccountsPage() {
   useEffect(() => {
     fetchAccounts();
   }, [fetchAccounts]);
+
+  // Fetch system logs from API
+  const fetchLogs = useCallback(async () => {
+    try {
+      const res = await apiClient.admin.getSystemLogs();
+      setLogs(res.logs);
+      setMetrics(res.metrics);
+    } catch {
+      // Non-fatal logging fetch error
+    } finally {
+      setIsLogsLoading(false);
+    }
+  }, []);
+
+  // Polling logs every 3s when tab is 'logs'
+  useEffect(() => {
+    if (activeTab !== "logs") return;
+    setIsLogsLoading(true);
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 3000);
+    return () => clearInterval(interval);
+  }, [activeTab, fetchLogs]);
+
+  // Auto-scroll effect
+  useEffect(() => {
+    if (autoScroll && activeTab === "logs") {
+      terminalEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [logs, autoScroll, activeTab]);
+
+  // Filter logs by level
+  const filteredLogs = useMemo(() => {
+    if (logLevelFilter === "ALL") return logs;
+    return logs.filter((l) => l.level.toUpperCase() === logLevelFilter);
+  }, [logs, logLevelFilter]);
 
   // Close 3-dots menu on outside click
   useEffect(() => {
@@ -278,8 +337,53 @@ export default function AdminAccountsPage() {
         </div>
       )}
 
-      {/* Header & Quick Action */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      {/* Navigation Tabs */}
+      <div className="flex items-center gap-2 p-1 bg-[#161619] border border-white/10 rounded-2xl">
+        <button
+          onClick={() => setActiveTab("accounts")}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+            activeTab === "accounts"
+              ? "bg-white/15 text-white shadow-sm border border-white/15"
+              : "text-[#8E8E93] hover:text-white hover:bg-white/5"
+          }`}
+        >
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+            <circle cx="9" cy="7" r="4" />
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
+          <span>Manajemen Akun</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/90">
+            {accounts.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("logs")}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+            activeTab === "logs"
+              ? "bg-[#39FF14]/15 text-[#39FF14] shadow-sm border border-[#39FF14]/30 glow-brand"
+              : "text-[#8E8E93] hover:text-white hover:bg-white/5"
+          }`}
+        >
+          <div className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#39FF14] opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#39FF14]"></span>
+          </div>
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="4 17 10 11 4 5" />
+            <line x1="12" y1="19" x2="20" y2="19" />
+          </svg>
+          <span>Live System Logs</span>
+        </button>
+      </div>
+
+      {/* ================= VIEW 1: MANAJEMEN AKUN ================= */}
+      {activeTab === "accounts" && (
+        <div className="space-y-5 animate-in fade-in duration-150">
+          {/* Header & Quick Action */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
             Manajemen Akun
@@ -515,6 +619,207 @@ export default function AdminAccountsPage() {
           })
         )}
       </div>
+        </div>
+      )}
+
+      {/* ================= VIEW 2: LIVE SYSTEM LOGS ================= */}
+      {activeTab === "logs" && (
+        <div className="space-y-4 animate-in fade-in duration-200">
+          {/* Header & Status Indicator */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2 font-mono">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#39FF14] glow-brand animate-pulse" />
+                Live System Logs
+              </h1>
+              <p className="text-xs text-[#8E8E93] mt-0.5">
+                In-Memory Ring Buffer (RAM) • Pemantauan Real-time 0% Disk I/O
+              </p>
+            </div>
+
+            {/* Live Polling Status Badge */}
+            <div className="flex items-center gap-2 self-start sm:self-auto px-3 py-1.5 rounded-xl bg-[#161619] border border-white/10 text-xs">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#39FF14] opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-[#39FF14]"></span>
+              </span>
+              <span className="text-[#39FF14] font-mono text-[11px] font-semibold">
+                Polling Aktif (3s)
+              </span>
+            </div>
+          </div>
+
+          {/* System Metrics Chips */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Node Heap</span>
+              <span className="text-sm font-bold font-mono text-white mt-0.5">
+                {metrics ? `${metrics.heapUsedMb} MB / ${metrics.heapTotalMb} MB` : "—"}
+              </span>
+            </div>
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Process RSS</span>
+              <span className="text-sm font-bold font-mono text-[#39FF14] mt-0.5">
+                {metrics ? `${metrics.rssMb} MB` : "—"}
+              </span>
+            </div>
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Server Uptime</span>
+              <span className="text-sm font-bold font-mono text-cyan-400 mt-0.5">
+                {metrics ? formatUptime(metrics.uptimeSec) : "—"}
+              </span>
+            </div>
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Total Baris</span>
+              <span className="text-sm font-bold font-mono text-white mt-0.5">
+                {logs.length} / 500
+              </span>
+            </div>
+          </div>
+
+          {/* Controls Bar: Filter, AutoScroll & Refresh */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5 p-2 rounded-xl bg-[#161619] border border-white/10">
+            {/* Filter buttons */}
+            <div className="flex items-center gap-1">
+              {(["ALL", "INFO", "WARN", "ERROR"] as const).map((lvl) => (
+                <button
+                  key={lvl}
+                  onClick={() => setLogLevelFilter(lvl)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-semibold transition-all cursor-pointer ${
+                    logLevelFilter === lvl
+                      ? lvl === "ERROR"
+                        ? "bg-[#FF3B30]/25 text-[#FF3B30] border border-[#FF3B30]/40"
+                        : lvl === "WARN"
+                        ? "bg-[#FFCC00]/25 text-[#FFCC00] border border-[#FFCC00]/40"
+                        : "bg-[#39FF14]/20 text-[#39FF14] border border-[#39FF14]/30"
+                      : "text-[#8E8E93] hover:text-white hover:bg-white/5"
+                  }`}
+                >
+                  {lvl}
+                </button>
+              ))}
+            </div>
+
+            {/* Right action controls */}
+            <div className="flex items-center gap-2">
+              {/* Auto Scroll Toggle */}
+              <button
+                onClick={() => setAutoScroll(!autoScroll)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-mono transition-all cursor-pointer border ${
+                  autoScroll
+                    ? "bg-[#39FF14]/15 border-[#39FF14]/30 text-[#39FF14]"
+                    : "bg-white/5 border-white/10 text-[#8E8E93] hover:text-white"
+                }`}
+                title="Scroll otomatis saat ada log baru"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="7 13 12 18 17 13" />
+                  <polyline points="7 6 12 11 17 6" />
+                </svg>
+                <span>Auto-scroll: {autoScroll ? "ON" : "OFF"}</span>
+              </button>
+
+              {/* Refresh Button */}
+              <button
+                onClick={fetchLogs}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-[#8E8E93] hover:text-white text-[11px] font-mono transition-default cursor-pointer"
+                title="Refresh log manual"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Terminal Box */}
+          <div className="relative rounded-2xl bg-[#08080A] border border-white/15 shadow-2xl overflow-hidden">
+            {/* Terminal Window Header */}
+            <div className="flex items-center justify-between px-4 py-2.5 bg-[#121215] border-b border-white/10">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#FF5F56]" />
+                <span className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E]" />
+                <span className="w-2.5 h-2.5 rounded-full bg-[#27C93F]" />
+                <span className="text-[11px] text-[#8E8E93] font-mono ml-2">dengarkan-server-logs ~ ring-buffer</span>
+              </div>
+              <span className="text-[10px] text-[#8E8E93] font-mono">
+                {filteredLogs.length} entri ditampilkan
+              </span>
+            </div>
+
+            {/* Terminal Body */}
+            <div className="p-3.5 sm:p-4 max-h-[480px] min-h-[300px] overflow-y-auto font-mono text-[11px] leading-relaxed space-y-1.5 select-text">
+              {isLogsLoading && logs.length === 0 ? (
+                <div className="py-12 flex flex-col items-center justify-center gap-2 text-[#8E8E93]">
+                  <div className="w-5 h-5 border-2 border-[#39FF14] border-t-transparent rounded-full animate-spin" />
+                  <span>Menghubungkan ke in-memory logger...</span>
+                </div>
+              ) : filteredLogs.length === 0 ? (
+                <div className="py-12 text-center text-[#8E8E93]">
+                  <span>Tidak ada log untuk filter "{logLevelFilter}".</span>
+                </div>
+              ) : (
+                filteredLogs.map((entry) => {
+                  const isErr = entry.level === "error";
+                  const isWarn = entry.level === "warn";
+
+                  return (
+                    <div
+                      key={entry.id}
+                      className={`flex items-start gap-2 py-0.5 px-1 rounded transition-colors ${
+                        isErr
+                          ? "bg-[#FF3B30]/10 text-red-300"
+                          : isWarn
+                          ? "bg-[#FFCC00]/10 text-yellow-200"
+                          : "hover:bg-white/5 text-gray-200"
+                      }`}
+                    >
+                      {/* Timestamp */}
+                      <span className="text-[#6C6C70] flex-shrink-0 select-none">
+                        [{entry.timestamp}]
+                      </span>
+
+                      {/* Level Badge */}
+                      <span
+                        className={`flex-shrink-0 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase select-none ${
+                          isErr
+                            ? "bg-[#FF3B30]/20 text-[#FF3B30] border border-[#FF3B30]/40"
+                            : isWarn
+                            ? "bg-[#FFCC00]/20 text-[#FFCC00] border border-[#FFCC00]/40"
+                            : "bg-[#39FF14]/15 text-[#39FF14] border border-[#39FF14]/30"
+                        }`}
+                      >
+                        {entry.level}
+                      </span>
+
+                      {/* Tag Badge */}
+                      <span
+                        className={`flex-shrink-0 font-bold ${
+                          entry.tag === "AUDIO_ROUTING"
+                            ? "text-purple-400"
+                            : entry.tag === "YTDLP"
+                            ? "text-sky-400"
+                            : entry.tag === "TRENDING"
+                            ? "text-emerald-400"
+                            : "text-[#8E8E93]"
+                        }`}
+                      >
+                        [{entry.tag}]
+                      </span>
+
+                      {/* Message */}
+                      <span className="flex-1 break-all font-mono">
+                        {entry.message}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={terminalEndRef} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ================= MODAL: TAMBAH AKUN ================= */}
       {isAddModalOpen && (

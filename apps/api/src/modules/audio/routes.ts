@@ -37,6 +37,35 @@ const STREAM_RANGE_CAP = Math.max(
   parseInt(process.env.STREAM_RANGE_CAP || '', 10) || 10 * 1024 * 1024,
 );
 
+// Abort/resume a CDN fetch when no bytes arrive for this long.
+const STREAM_IDLE_TIMEOUT_MS = 15_000;
+// Max mid-chunk resume attempts after a CDN TCP drop / stall.
+const STREAM_RESUME_ATTEMPTS = 2;
+
+/**
+ * fetch() whose *headers* phase is bounded by STREAM_IDLE_TIMEOUT_MS.
+ * The timer is cleared once headers arrive, so long body downloads are
+ * never cut off (body idleness is handled by the reader's idle timer).
+ */
+async function fetchCdn(
+  url: string,
+  headers: Record<string, string>,
+  parent: AbortSignal,
+): Promise<Response> {
+  const ctl = new AbortController();
+  const onParent = () => ctl.abort();
+  parent.addEventListener('abort', onParent, { once: true });
+  const timer = setTimeout(() => ctl.abort(), STREAM_IDLE_TIMEOUT_MS);
+  try {
+    return await fetch(url, { headers, signal: ctl.signal });
+  } finally {
+    clearTimeout(timer);
+    // Keep parent → ctl link alive while body is being read; it is released
+    // automatically when `parent` aborts or is GC'd with the request.
+    if (parent.aborted) parent.removeEventListener('abort', onParent);
+  }
+}
+
 // ── Error handler helper ──────────────────────────────────────────────────────
 
 function sendResolverError(
@@ -140,26 +169,27 @@ export const audioRoutes: FastifyPluginAsync = async (app) => {
         end = Math.min(reqEnd, start + STREAM_RANGE_CAP - 1);
       }
 
-      // Abort upstream fetch as soon as the client goes away (seek / close).
+      // Abort upstream fetch only when the client socket truly goes away
+      // before the response finished (seek / close). request.raw 'close' can
+      // fire prematurely on some Node versions, so it is not used.
       const abort = new AbortController();
-      const onClose = () => abort.abort();
-      request.raw.once('close', onClose);
+      const onClose = () => {
+        if (!reply.raw.writableFinished) abort.abort();
+      };
       reply.raw.once('close', onClose);
       const cleanup = () => {
-        request.raw.off('close', onClose);
         reply.raw.off('close', onClose);
       };
 
+      const cdnHeaders = (from: number): Record<string, string> => ({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.youtube.com/',
+        'Range': `bytes=${from}-${end}`,
+      });
+
       let cdnRes: Response;
       try {
-        cdnRes = await fetch(stream.streamUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://www.youtube.com/',
-            'Range': `bytes=${start}-${end}`,
-          },
-          signal: abort.signal,
-        });
+        cdnRes = await fetchCdn(stream.streamUrl, cdnHeaders(start), abort.signal);
       } catch (err) {
         cleanup();
         if (abort.signal.aborted) return reply;
@@ -214,10 +244,73 @@ export const audioRoutes: FastifyPluginAsync = async (app) => {
         return;
       }
 
+      // Resumable source: if the CDN drops/stalls mid-chunk, re-fetch the
+      // remaining byte range (max STREAM_RESUME_ATTEMPTS) and keep writing to
+      // the same response. Chunks are yielded one by one → pipeline keeps
+      // native backpressure; memory stays bounded to one chunk.
+      const totalExpected = end - start + 1;
+      const declaredLen = contentLength ? parseInt(contentLength, 10) : NaN;
+      const expected = Number.isFinite(declaredLen) ? declaredLen : totalExpected;
+      const firstBody = cdnRes.body as unknown as NodeWebReadableStream<Uint8Array>;
+      const streamUrl = stream.streamUrl;
+      const log = request.log;
+
+      async function* resumableSource(): AsyncGenerator<Uint8Array> {
+        let body: NodeWebReadableStream<Uint8Array> | null = firstBody;
+        let sent = 0;
+        let attempts = 0;
+        while (body) {
+          const reader = body.getReader();
+          let idleTimer: NodeJS.Timeout | undefined;
+          const armIdle = () => {
+            if (idleTimer) clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => {
+              void reader.cancel(new Error('CDN idle timeout')).catch(() => {});
+            }, STREAM_IDLE_TIMEOUT_MS);
+          };
+          let finished = false;
+          try {
+            armIdle();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) { finished = true; break; }
+              armIdle();
+              if (value && value.byteLength > 0) {
+                sent += value.byteLength;
+                yield value;
+              }
+            }
+          } catch {
+            // CDN TCP drop / idle cancel → fall through to resume logic.
+          } finally {
+            if (idleTimer) clearTimeout(idleTimer);
+            // Early exit (client gone → generator.return()) or error:
+            // release undici socket/buffers so memory stays at 0 leak.
+            if (!finished) void reader.cancel().catch(() => {});
+            try { reader.releaseLock(); } catch { /* ignore */ }
+          }
+          body = null;
+
+          if (abort.signal.aborted || sent >= expected) return;
+          // Short read (error, idle cancel or truncated end) → resume.
+          if (attempts >= STREAM_RESUME_ATTEMPTS) {
+            throw new Error(`CDN stream truncated at ${sent}/${expected} bytes`);
+          }
+          attempts++;
+          log.warn({ sent, expected, attempts }, 'CDN stream interrupted, resuming');
+          const res = await fetchCdn(streamUrl, cdnHeaders(start + sent), abort.signal);
+          if (res.status !== 206 || !res.body) {
+            void res.body?.cancel().catch(() => {});
+            throw new Error(`CDN resume failed with status ${res.status}`);
+          }
+          body = res.body as unknown as NodeWebReadableStream<Uint8Array>;
+        }
+      }
+
       // pipeline(): native backpressure + destroys both sides on close/error.
       try {
         await pipeline(
-          Readable.fromWeb(cdnRes.body as unknown as NodeWebReadableStream<Uint8Array>),
+          Readable.from(resumableSource(), { objectMode: false }),
           reply.raw,
         );
       } catch (err) {

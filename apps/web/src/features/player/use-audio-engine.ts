@@ -1291,6 +1291,121 @@ export function useAudioEngine(): AudioEngine {
 
     const elements = [audioA, audioB];
 
+    // ── Network resilience (iOS Safari) ─────────────────────────────────────
+    // Stall watchdog + fake-'ended' guard + soft reconnect. All timers and
+    // temporary listeners are released in the effect cleanup (0 leak).
+    const STALL_TIMEOUT_MS   = 8_000;
+    const FAKE_END_MARGIN_S  = 3;
+    const RELOAD_TIMEOUT_MS  = 15_000;
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingReloadCleanup: (() => void) | null = null;
+    let lastFakeEnd: { videoId: string; pos: number } | null = null;
+    let disposed = false;
+
+    const clearStallTimer = () => {
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+    };
+
+    const getMetaDuration = () =>
+      currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
+
+    /** Re-point src to the proxy, wait for metadata, seek, optionally play. */
+    const reloadAt = (audio: HTMLAudioElement, videoId: string, time: number, play: boolean) =>
+      new Promise<void>((resolve, reject) => {
+        const done = () => {
+          clearTimeout(t);
+          audio.removeEventListener("loadedmetadata", onMeta);
+          audio.removeEventListener("error", onErr);
+          pendingReloadCleanup = null;
+        };
+        const onMeta = () => {
+          done();
+          try { if (time > 0) audio.currentTime = time; } catch { /* ignore */ }
+          if (play) audio.play().then(() => resolve(), reject);
+          else resolve();
+        };
+        const onErr = () => { done(); reject(new Error("reload failed")); };
+        const t = setTimeout(() => { done(); reject(new Error("reload timeout")); }, RELOAD_TIMEOUT_MS);
+        pendingReloadCleanup = () => { done(); reject(new Error("disposed")); };
+        audio.addEventListener("loadedmetadata", onMeta);
+        audio.addEventListener("error", onErr);
+        audio.src = getProxyStreamUrl(videoId);
+        audio.load();
+      });
+
+    /** Hard recovery: re-resolve stream via yt-dlp (expired URL etc.). */
+    const hardRecover = async (audio: HTMLAudioElement, savedTime: number, wasPlaying: boolean) => {
+      const track = currentTrackRef.current;
+      if (!track) { setPlayerState("error"); return; }
+      setPlayerState("refreshing");
+      refreshingRef.current = true;
+
+      const MAX_ATTEMPTS = 3;
+      const BASE_DELAY   = 1_500;
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        if (disposed || currentTrackRef.current?.videoId !== track.videoId) break;
+        try {
+          if (typeof navigator !== "undefined" && !navigator.onLine) {
+            await new Promise<void>((r) => {
+              const h = () => { window.removeEventListener("online", h); r(); };
+              window.addEventListener("online", h);
+            });
+          }
+
+          const fresh = await apiClient.audio.refresh(track.videoId);
+          setCurrentStream(fresh);
+          await reloadAt(audio, track.videoId, savedTime, wasPlaying);
+          if (!wasPlaying) setPlayerState("paused");
+          refreshingRef.current = false;
+          return;
+        } catch (err: unknown) {
+          const apiErr = err as { statusCode?: number };
+          if (apiErr?.statusCode === 404 || apiErr?.statusCode === 422) break;
+          const delay = apiErr?.statusCode === 429
+            ? BASE_DELAY * 4 * attempt
+            : BASE_DELAY * 2 ** (attempt - 1);
+          if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, delay));
+        }
+      }
+
+      refreshingRef.current = false;
+      if (!disposed) setPlayerState("error");
+    };
+
+    /** Soft reconnect: reopen proxy stream at current position (no yt-dlp). */
+    const softReconnect = async (audio: HTMLAudioElement, reason: string) => {
+      const track = currentTrackRef.current;
+      if (!track || refreshingRef.current || isAdvancingRef.current) return;
+      clearStallTimer();
+      const savedTime = audio.currentTime;
+      console.warn(`[RESILIENCE] Soft reconnect (${reason}) at ${savedTime.toFixed(1)}s`);
+      refreshingRef.current = true;
+      setPlayerState("refreshing");
+      try {
+        await reloadAt(audio, track.videoId, savedTime, true);
+        refreshingRef.current = false;
+      } catch {
+        if (disposed || currentTrackRef.current?.videoId !== track.videoId) {
+          refreshingRef.current = false;
+          return;
+        }
+        await hardRecover(audio, savedTime, true);
+      }
+    };
+
+    const armStallWatchdog = (audio: HTMLAudioElement) => {
+      if (stallTimer || refreshingRef.current) return;
+      const videoId = currentTrackRef.current?.videoId;
+      stallTimer = setTimeout(() => {
+        stallTimer = null;
+        if (disposed || audio !== getActiveAudio()) return;
+        if (currentTrackRef.current?.videoId !== videoId) return;
+        if (audio.paused || audio.ended || audio.readyState >= 3) return;
+        void softReconnect(audio, "stall");
+      }, STALL_TIMEOUT_MS);
+    };
+
     const onPlay = (e: Event) => {
       const standby = getStandbyAudio();
       // Standby Audio Mutelock: Immediately force pause if standby attempts unauthorized playback
@@ -1325,6 +1440,7 @@ export function useAudioEngine(): AudioEngine {
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const dur = getCanonicalDuration(meta, audio.duration);
       console.log(`[MEDIA EVENT] PLAYING (Slot ${activeAudioSlotRef.current}) | Time: ${audio.currentTime.toFixed(1)}s / ${dur.toFixed(1)}s | Paused: false`);
+      clearStallTimer();
       setPlayerState("playing");
     };
 
@@ -1352,13 +1468,19 @@ export function useAudioEngine(): AudioEngine {
     const onWaiting = (e: Event) => {
       if (e.target !== getActiveAudio()) return;
       if (isAdvancingRef.current) return;
-      setPlayerState("buffering");
+      setPlayerState((prev) => (prev === "refreshing" ? prev : "buffering"));
+      armStallWatchdog(e.target as HTMLAudioElement);
     };
 
     const onStalled = (e: Event) => {
       if (e.target !== getActiveAudio()) return;
       if (isAdvancingRef.current) return;
-      setPlayerState("buffering");
+      const audio = e.target as HTMLAudioElement;
+      // 'stalled' also fires harmlessly when buffer is full; only react when
+      // playback actually lacks data.
+      if (audio.paused || audio.readyState >= 3) return;
+      setPlayerState((prev) => (prev === "refreshing" ? prev : "buffering"));
+      armStallWatchdog(audio);
     };
 
     const onCanPlay = (e: Event) => {
@@ -1406,6 +1528,26 @@ export function useAudioEngine(): AudioEngine {
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const dur = audio ? getCanonicalDuration(meta, audio.duration) : 0;
       console.log(`[MEDIA EVENT] ENDED (Slot ${activeAudioSlotRef.current}) | Time: ${audio?.currentTime.toFixed(1)}s / ${dur.toFixed(1)}s | Paused: true`);
+      clearStallTimer();
+
+      // Fake-'ended' guard: iOS fires 'ended' when a proxied response is
+      // truncated by a network drop. If we're clearly before the real end,
+      // reconnect at the current position instead of skipping the track.
+      // Only one retry per position → never loops; genuine ends unaffected.
+      const track = currentTrackRef.current;
+      if (
+        audio && track &&
+        getMetaDuration() > FAKE_END_MARGIN_S * 2 &&
+        isFinite(dur) && dur > 0 &&
+        audio.currentTime > 0 &&
+        audio.currentTime < dur - FAKE_END_MARGIN_S &&
+        !(lastFakeEnd && lastFakeEnd.videoId === track.videoId && Math.abs(lastFakeEnd.pos - audio.currentTime) < 2)
+      ) {
+        lastFakeEnd = { videoId: track.videoId, pos: audio.currentTime };
+        void softReconnect(audio, "premature-ended");
+        return;
+      }
+      lastFakeEnd = null;
       void advanceNextRef.current();
     };
 
@@ -1442,53 +1584,19 @@ export function useAudioEngine(): AudioEngine {
     const onError = async (e: Event) => {
       if (e.target !== getActiveAudio()) return;
       isAdvancingRef.current = false;
+      clearStallTimer();
       const track = currentTrackRef.current;
       const audio = getActiveAudio();
       if (!track || !audio) { setPlayerState("error"); return; }
       if (refreshingRef.current) return;
 
       const savedTime  = audio.currentTime;
-      const wasPlaying = !audio.paused;
+      // After a network error Safari already reports paused=true; use the
+      // user's intent (last player state) instead.
+      const prevState  = playerStateRef.current;
+      const wasPlaying = !audio.paused || prevState === "playing" || prevState === "buffering" || prevState === "loading";
 
-      setPlayerState("refreshing");
-      refreshingRef.current = true;
-
-      const MAX_ATTEMPTS = 3;
-      const BASE_DELAY   = 1_500;
-
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-          if (typeof navigator !== "undefined" && !navigator.onLine) {
-            await new Promise<void>((r) => {
-              const h = () => { window.removeEventListener("online", h); r(); };
-              window.addEventListener("online", h);
-            });
-          }
-
-          const fresh = await apiClient.audio.refresh(track.videoId);
-          setCurrentStream(fresh);
-          audio.src = getProxyStreamUrl(track.videoId);
-          audio.currentTime = savedTime;
-
-          if (wasPlaying) {
-            await audio.play();
-          } else {
-            setPlayerState("paused");
-          }
-          refreshingRef.current = false;
-          return;
-        } catch (err: unknown) {
-          const apiErr = err as { statusCode?: number };
-          if (apiErr?.statusCode === 404 || apiErr?.statusCode === 422) break;
-          const delay = apiErr?.statusCode === 429
-            ? BASE_DELAY * 4 * attempt
-            : BASE_DELAY * 2 ** (attempt - 1);
-          if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, delay));
-        }
-      }
-
-      refreshingRef.current = false;
-      setPlayerState("error");
+      await hardRecover(audio, savedTime, wasPlaying);
     };
 
     for (const el of elements) {
@@ -1507,6 +1615,9 @@ export function useAudioEngine(): AudioEngine {
     }
 
     return () => {
+      disposed = true;
+      clearStallTimer();
+      pendingReloadCleanup?.();
       for (const el of elements) {
         el.removeEventListener("play",           onPlay);
         el.removeEventListener("playing",        onPlaying);

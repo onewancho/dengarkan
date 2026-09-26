@@ -256,20 +256,19 @@ export async function relatedTracks(videoId: string, hint?: string): Promise<Sea
 // ── Onboarding interests (trending + genres) ──────────────────────────────────
 export const TRENDING_INTERESTS = {
   trending: [
-    'Lagu Viral TikTok Terbaru',
+    'Lagu Viral TikTok Indonesia',
     'Top Hits Indonesia 2026',
-    'Lagu Galau Terpopuler',
-    'Trending Music Global',
+    'Lagu Galau Indonesia Populer',
+    'Trending Musik Indonesia',
   ],
   genres: ['Pop Indonesia', 'Rock', 'Dangdut', 'K-Pop', 'Jazz', 'Lo-fi', 'Hip-Hop', 'Indie', 'EDM'],
 };
 
-// ── Dynamic trending from YouTube charts (6h cache, static fallback) ──────────
-const CHART_PLAYLISTS = [
-  process.env.YT_TRENDING_PLAYLIST_ID || 'PL4fGSI1pDJn5ObxTlEPlkkornHXUiKX1z', // Top Indonesia
-  process.env.YT_TRENDING_GLOBAL_PLAYLIST_ID || 'PL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i', // Top Global
-];
-const TRENDING_TTL_MS = 6 * 60 * 60 * 1000;
+// ── Dynamic trending from YouTube charts (10 min cache, Region ID specific) ──
+const INDONESIA_CHART_PLAYLIST_ID =
+  process.env.YT_TRENDING_PLAYLIST_ID || 'PL4fGSI1pDJn5ObxTlEPlkkornHXUiKX1z'; // Top 100 Songs Indonesia
+
+const TRENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes (600 seconds)
 let trendingCache: { data: typeof TRENDING_INTERESTS; expiresAt: number } | null = null;
 let trendingInflight: Promise<typeof TRENDING_INTERESTS> | null = null;
 
@@ -290,6 +289,7 @@ async function fetchChartTitles(playlistId: string, limit: number): Promise<stri
     [
       '--dump-single-json', '--flat-playlist', '--no-warnings',
       '--socket-timeout', '10', '--playlist-end', String(limit),
+      '--geo-bypass-country', 'ID',
       `https://www.youtube.com/playlist?list=${playlistId}`,
     ],
     { maxBuffer: 10 * 1024 * 1024, timeout: 20000 }
@@ -302,21 +302,22 @@ async function fetchChartTitles(playlistId: string, limit: number): Promise<stri
 }
 
 async function buildTrending(): Promise<typeof TRENDING_INTERESTS> {
-  const settled = await Promise.allSettled([
-    fetchChartTitles(CHART_PLAYLISTS[0], 6),
-    fetchChartTitles(CHART_PLAYLISTS[1], 4),
-  ]);
   const seen = new Set<string>();
   const trending: string[] = [];
-  for (const r of settled) {
-    if (r.status !== 'fulfilled') continue;
-    for (const t of r.value) {
+
+  try {
+    const titles = await fetchChartTitles(INDONESIA_CHART_PLAYLIST_ID, 10);
+    for (const t of titles) {
       const k = t.toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      trending.push(t);
+      if (!seen.has(k)) {
+        seen.add(k);
+        trending.push(t);
+      }
     }
+  } catch {
+    // Non-fatal: fallback below
   }
+
   return {
     trending: trending.length > 0 ? trending.slice(0, 8) : TRENDING_INTERESTS.trending,
     genres: TRENDING_INTERESTS.genres,
@@ -329,8 +330,8 @@ export async function getTrendingInterests(): Promise<typeof TRENDING_INTERESTS>
     trendingInflight = buildTrending()
       .then((data) => {
         const isDynamic = data.trending !== TRENDING_INTERESTS.trending;
-        // Cache fallback only briefly (5 min) so we retry charts soon
-        trendingCache = { data, expiresAt: Date.now() + (isDynamic ? TRENDING_TTL_MS : 5 * 60 * 1000) };
+        // Cache dynamic 10 min, fallback 3 min
+        trendingCache = { data, expiresAt: Date.now() + (isDynamic ? TRENDING_TTL_MS : 3 * 60 * 1000) };
         return data;
       })
       .catch(() => TRENDING_INTERESTS)
@@ -338,4 +339,3 @@ export async function getTrendingInterests(): Promise<typeof TRENDING_INTERESTS>
   }
   return trendingInflight;
 }
-

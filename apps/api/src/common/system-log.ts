@@ -3,7 +3,10 @@
 //
 // In-Memory Ring Buffer (max 500 lines)
 // Zero disk I/O, zero impact on VPS storage
+// Includes Host VPS CPU & RAM Metrics via node:os
 // ============================================
+
+import os from 'node:os';
 
 export interface SystemLogEntry {
   id: number;
@@ -15,13 +18,51 @@ export interface SystemLogEntry {
 }
 
 export interface SystemMetrics {
+  // Node.js process metrics
   rssMb: number;
   heapUsedMb: number;
   heapTotalMb: number;
   uptimeSec: number;
+
+  // VPS host system metrics
+  systemTotalMemMb: number;
+  systemUsedMemMb: number;
+  systemMemPercent: number;
+  systemCpuPercent: number;
+  systemLoadAvg: number;
+  cpuCores: number;
 }
 
 const MAX_LOGS = 500;
+
+let lastCpuSnapshot: { idle: number; total: number } | null = null;
+
+function calculateCpuPercent(): number {
+  const cpus = os.cpus();
+  if (!cpus || cpus.length === 0) return 0;
+
+  let idle = 0;
+  let total = 0;
+  for (const cpu of cpus) {
+    for (const type of Object.keys(cpu.times) as (keyof typeof cpu.times)[]) {
+      total += cpu.times[type];
+    }
+    idle += cpu.times.idle;
+  }
+
+  if (!lastCpuSnapshot) {
+    lastCpuSnapshot = { idle, total };
+    return 0;
+  }
+
+  const idleDiff = idle - lastCpuSnapshot.idle;
+  const totalDiff = total - lastCpuSnapshot.total;
+  lastCpuSnapshot = { idle, total };
+
+  if (totalDiff <= 0) return 0;
+  const usage = 100 - Math.round((100 * idleDiff) / totalDiff);
+  return Math.max(0, Math.min(100, usage));
+}
 
 class SystemLogger {
   private buffer: SystemLogEntry[] = [];
@@ -82,11 +123,26 @@ class SystemLogger {
 
   getMetrics(): SystemMetrics {
     const mem = process.memoryUsage();
+    const totalMemBytes = os.totalmem();
+    const freeMemBytes = os.freemem();
+    const usedMemBytes = Math.max(0, totalMemBytes - freeMemBytes);
+    const systemTotalMemMb = Math.round(totalMemBytes / 1024 / 1024);
+    const systemUsedMemMb = Math.round(usedMemBytes / 1024 / 1024);
+    const systemMemPercent = systemTotalMemMb > 0 ? Math.round((systemUsedMemMb / systemTotalMemMb) * 100) : 0;
+    const loadAvg = os.loadavg();
+
     return {
       rssMb: Math.round(mem.rss / 1024 / 1024),
       heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
       heapTotalMb: Math.round(mem.heapTotal / 1024 / 1024),
       uptimeSec: Math.round(process.uptime()),
+
+      systemTotalMemMb,
+      systemUsedMemMb,
+      systemMemPercent,
+      systemCpuPercent: calculateCpuPercent(),
+      systemLoadAvg: Math.round((loadAvg[0] || 0) * 100) / 100,
+      cpuCores: os.cpus()?.length || 1,
     };
   }
 

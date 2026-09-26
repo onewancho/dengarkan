@@ -205,4 +205,10 @@ export interface AdminSystemMetrics {
   heapUsedMb: number;
   heapTotalMb: number;
   uptimeSec: number;
+  systemTotalMemMb: number;
+  systemUsedMemMb: number;
+  systemMemPercent: number;
+  systemCpuPercent: number;
+  systemLoadAvg: number;
+  cpuCores: number;
 }

@@ -62,6 +62,13 @@ function formatUptime(sec: number): string {
   return `${seconds}s`;
 }
 
+function formatMemoryMb(mb: number): string {
+  if (mb >= 1024) {
+    return `${(mb / 1024).toFixed(1)} GB`;
+  }
+  return `${mb} MB`;
+}
+
 export default function AdminAccountsPage() {
   const [activeTab, setActiveTab] = useState<"accounts" | "logs">("accounts");
 
@@ -649,31 +656,117 @@ export default function AdminAccountsPage() {
             </div>
           </div>
 
-          {/* System Metrics Chips */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
+          {/* System Metrics Chips — 6 Responsive Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+            {/* 1. System CPU */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium flex items-center justify-between">
+                <span>System CPU</span>
+                <span className="text-[9px] text-[#8E8E93] lowercase">{metrics?.cpuCores ?? 1} core</span>
+              </span>
+              <div className="mt-1">
+                <span
+                  className={`text-sm font-bold font-mono ${
+                    (metrics?.systemCpuPercent ?? 0) > 85
+                      ? "text-[#FF3B30]"
+                      : (metrics?.systemCpuPercent ?? 0) > 65
+                      ? "text-[#FFCC00]"
+                      : "text-[#39FF14]"
+                  }`}
+                >
+                  {metrics ? `${metrics.systemCpuPercent}%` : "—"}
+                </span>
+                <span className="text-[10px] text-[#8E8E93] font-mono block mt-0.5">
+                  Load: {metrics?.systemLoadAvg ?? 0}
+                </span>
+              </div>
+            </div>
+
+            {/* 2. System RAM */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium flex items-center justify-between">
+                <span>System RAM</span>
+                <span
+                  className={`text-[9px] font-mono font-bold ${
+                    (metrics?.systemMemPercent ?? 0) > 85
+                      ? "text-[#FF3B30]"
+                      : (metrics?.systemMemPercent ?? 0) > 70
+                      ? "text-[#FFCC00]"
+                      : "text-[#39FF14]"
+                  }`}
+                >
+                  {metrics ? `${metrics.systemMemPercent}%` : "—"}
+                </span>
+              </span>
+              <div className="mt-1">
+                <span className="text-xs font-bold font-mono text-white">
+                  {metrics ? `${formatMemoryMb(metrics.systemUsedMemMb)} / ${formatMemoryMb(metrics.systemTotalMemMb)}` : "—"}
+                </span>
+                <div className="w-full bg-white/10 h-1 rounded-full mt-1.5 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      (metrics?.systemMemPercent ?? 0) > 85
+                        ? "bg-[#FF3B30]"
+                        : (metrics?.systemMemPercent ?? 0) > 70
+                        ? "bg-[#FFCC00]"
+                        : "bg-[#39FF14]"
+                    }`}
+                    style={{ width: `${Math.min(100, metrics?.systemMemPercent ?? 0)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Node Heap */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
               <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Node Heap</span>
-              <span className="text-sm font-bold font-mono text-white mt-0.5">
-                {metrics ? `${metrics.heapUsedMb} MB / ${metrics.heapTotalMb} MB` : "—"}
-              </span>
+              <div className="mt-1">
+                <span className="text-xs font-bold font-mono text-white">
+                  {metrics ? `${metrics.heapUsedMb} MB / ${metrics.heapTotalMb} MB` : "—"}
+                </span>
+                <span className="text-[10px] text-[#8E8E93] font-mono block mt-0.5">
+                  V8 JS Engine
+                </span>
+              </div>
             </div>
-            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
+
+            {/* 4. Process RSS */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
               <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Process RSS</span>
-              <span className="text-sm font-bold font-mono text-[#39FF14] mt-0.5">
-                {metrics ? `${metrics.rssMb} MB` : "—"}
-              </span>
+              <div className="mt-1">
+                <span className="text-sm font-bold font-mono text-[#39FF14]">
+                  {metrics ? `${metrics.rssMb} MB` : "—"}
+                </span>
+                <span className="text-[10px] text-[#8E8E93] font-mono block mt-0.5">
+                  Alokasi Memori
+                </span>
+              </div>
             </div>
-            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
+
+            {/* 5. Server Uptime */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
               <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Server Uptime</span>
-              <span className="text-sm font-bold font-mono text-cyan-400 mt-0.5">
-                {metrics ? formatUptime(metrics.uptimeSec) : "—"}
-              </span>
+              <div className="mt-1">
+                <span className="text-sm font-bold font-mono text-cyan-400">
+                  {metrics ? formatUptime(metrics.uptimeSec) : "—"}
+                </span>
+                <span className="text-[10px] text-[#8E8E93] font-mono block mt-0.5">
+                  Waktu Aktif
+                </span>
+              </div>
             </div>
-            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
+
+            {/* 6. Ring Buffer Log */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
               <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Total Baris</span>
-              <span className="text-sm font-bold font-mono text-white mt-0.5">
-                {logs.length} / 500
-              </span>
+              <div className="mt-1">
+                <span className="text-sm font-bold font-mono text-white">
+                  {logs.length} <span className="text-[10px] text-[#8E8E93] font-normal">/ 500</span>
+                </span>
+                <span className="text-[10px] text-[#8E8E93] font-mono block mt-0.5">
+                  In-Memory RAM
+                </span>
+              </div>
             </div>
           </div>
 

@@ -48,14 +48,37 @@ interface CachedStreamEntry {
 const clientStreamCache = new Map<string, CachedStreamEntry>();
 const inFlightStreamFetches = new Map<string, Promise<AudioStream>>();
 
+let _nativeHlsSupported: boolean | null = null;
+
 /**
- * Returns the server-side proxy URL for a video stream.
- * Using the proxy instead of the raw CDN URL is essential for LAN/mobile clients:
- * YouTube CDN URLs contain an `ip=` parameter bound to the server's IP address.
- * The proxy endpoint (/api/audio/stream/:videoId) fetches from CDN server-side
- * and streams HTTP 206 Partial Content range requests to clients.
+ * Checks if the browser natively supports HLS (.m3u8) playback via standard HTML5 <audio>
+ * elements (Apple WebKit: iOS Safari, macOS Safari, Chrome on iOS).
  */
-export function getProxyStreamUrl(videoId: string): string {
+export function isNativeHlsSupported(audio?: HTMLAudioElement | null): boolean {
+  if (typeof window === "undefined") return false;
+  if (_nativeHlsSupported !== null) return _nativeHlsSupported;
+  try {
+    const el = audio || new Audio();
+    const canPlay = el.canPlayType("application/vnd.apple.mpegurl");
+    _nativeHlsSupported = canPlay === "probably" || canPlay === "maybe";
+  } catch {
+    _nativeHlsSupported = false;
+  }
+  return _nativeHlsSupported;
+}
+
+/**
+ * Returns the audio source URL.
+ * On Apple iOS Safari / WebKit (native HLS support), routes to the format 234
+ * HLS playlist endpoint (/api/audio/hls/:videoId/playlist.m3u8), completely
+ * eliminating the 10:52 background silence stall on long audio tracks.
+ * On non-Apple browsers (Chrome desktop, Android), returns the progressive
+ * range-stream endpoint (/api/audio/stream/:videoId).
+ */
+export function getProxyStreamUrl(videoId: string, audio?: HTMLAudioElement | null): string {
+  if (isNativeHlsSupported(audio)) {
+    return `/api/audio/hls/${encodeURIComponent(videoId)}/playlist.m3u8`;
+  }
   return `/api/audio/stream/${encodeURIComponent(videoId)}`;
 }
 

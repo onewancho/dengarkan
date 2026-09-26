@@ -16,6 +16,7 @@ export interface AudioStream {
   title: string;
   channelName: string;
   thumbnailUrl: string;
+  hlsUrl?: string;
 }
 
 export interface AudioResolver {

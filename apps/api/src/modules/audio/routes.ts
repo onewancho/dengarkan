@@ -379,20 +379,238 @@ export const audioRoutes: FastifyPluginAsync = async (app) => {
     }
   );
 
+  // ── Native HLS Cache & Proxy Helper ─────────────────────────────────────────
+  // In-memory cache for parsed format 234 HLS manifests and rewritten segment URLs.
+  // Zero ffmpeg, zero transcoding, instantaneous proxying of ~110 KB AAC segments.
+
+  interface HlsManifestCacheEntry {
+    manifest: string;
+    segments: string[];
+    expiresAt: number;
+  }
+
+  const hlsManifestCache = new Map<string, HlsManifestCacheEntry>();
+
+  function setHlsManifestCache(videoId: string, entry: HlsManifestCacheEntry): void {
+    hlsManifestCache.set(videoId, entry);
+    if (hlsManifestCache.size > 300) {
+      const oldest = hlsManifestCache.keys().next().value;
+      if (oldest) hlsManifestCache.delete(oldest);
+    }
+  }
+
+  async function getOrFetchHlsManifest(
+    videoId: string,
+    sessionToken?: string
+  ): Promise<HlsManifestCacheEntry | null> {
+    const cached = hlsManifestCache.get(videoId);
+    if (cached && cached.expiresAt > Date.now() + 60_000) {
+      return cached;
+    }
+
+    let stream = await audioResolver.resolve(videoId);
+    let hlsUrl = stream.hlsUrl;
+    if (!hlsUrl) {
+      // Force fresh resolve from yt-dlp if cached stream lacked hlsUrl
+      stream = await audioResolver.refresh(videoId);
+      hlsUrl = stream.hlsUrl;
+    }
+
+    if (!hlsUrl) {
+      return null;
+    }
+
+    const res = await fetch(hlsUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.youtube.com/',
+      },
+    });
+
+    if (!res.ok) {
+      return null;
+    }
+
+    const rawM3u8 = await res.text();
+    const lines = rawM3u8.split('\n');
+    const segments: string[] = [];
+    const rewrittenLines: string[] = [];
+    const tokenQuery = sessionToken ? `?token=${encodeURIComponent(sessionToken)}` : '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        const seq = segments.length;
+        segments.push(trimmed);
+        rewrittenLines.push(`/api/audio/hls/segment/${encodeURIComponent(videoId)}/${seq}.ts${tokenQuery}`);
+      } else {
+        rewrittenLines.push(line);
+      }
+    }
+
+    const entry: HlsManifestCacheEntry = {
+      manifest: rewrittenLines.join('\n'),
+      segments,
+      expiresAt: stream.expiresAt || Date.now() + 4 * 60 * 60 * 1000,
+    };
+
+    setHlsManifestCache(videoId, entry);
+    return entry;
+  }
+
+  // ── GET /api/audio/hls/:videoId/playlist.m3u8 ──────────────────────────────
+  // Native YouTube Format 234 HLS playlist proxy for iOS Safari / AVPlayer.
+  // Pre-chunked into ~7s AAC segments (ratebypassed) with zero transcoding.
+  // Permanently resolves iOS lock screen 10:52 background silence stall.
+
+  app.get(
+    '/api/audio/hls/:videoId/playlist.m3u8',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const params = request.params as { videoId?: string };
+      const parsed = videoIdSchema.safeParse(params.videoId);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: 'Bad Request', message: 'Invalid YouTube video ID', statusCode: 400,
+        });
+      }
+
+      const token = request.cookies?.session_token || (request.query as { token?: string }).token;
+      try {
+        const entry = await getOrFetchHlsManifest(parsed.data, token);
+        if (!entry) {
+          return reply.status(404).send({
+            error: 'HLS_UNAVAILABLE',
+            message: 'Native HLS format not available for this track',
+            statusCode: 404,
+          });
+        }
+
+        reply.header('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
+        reply.header('Cache-Control', 'public, max-age=3600');
+        reply.header('Access-Control-Allow-Origin', '*');
+        return reply.send(entry.manifest);
+      } catch (err) {
+        return sendResolverError(err, reply, request.log);
+      }
+    }
+  );
+
+  // ── GET /api/audio/hls/segment/:videoId/:seq.ts ─────────────────────────────
+  // Proxies lightweight (~110 KB) native AAC MPEG-TS audio segment from YouTube CDN.
+  // Instant response, 0 CPU / no ffmpeg, zero RAM build-up.
+
+  app.get(
+    '/api/audio/hls/segment/:videoId/:seq.ts',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const params = request.params as { videoId?: string; seq?: string };
+      const parsed = videoIdSchema.safeParse(params.videoId);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: 'Bad Request', message: 'Invalid YouTube video ID', statusCode: 400,
+        });
+      }
+
+      const seq = parseInt(params.seq || '', 10);
+      if (Number.isNaN(seq) || seq < 0) {
+        return reply.status(400).send({
+          error: 'Bad Request', message: 'Invalid segment index', statusCode: 400,
+        });
+      }
+
+      const token = request.cookies?.session_token || (request.query as { token?: string }).token;
+      let entry = hlsManifestCache.get(parsed.data);
+      if (!entry || !entry.segments[seq]) {
+        try {
+          entry = (await getOrFetchHlsManifest(parsed.data, token)) || undefined;
+        } catch {
+          // continue to 404 check
+        }
+      }
+
+      let cdnUrl = entry?.segments[seq];
+      if (!cdnUrl) {
+        return reply.status(404).send({
+          error: 'Not Found', message: 'HLS segment not found', statusCode: 404,
+        });
+      }
+
+      try {
+        let segRes = await fetch(cdnUrl, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.youtube.com/',
+          },
+        });
+
+        // Auto-recover if CDN URL expired (403)
+        if (segRes.status === 403) {
+          hlsManifestCache.delete(parsed.data);
+          void audioResolver.invalidate(parsed.data);
+          const refreshed = await getOrFetchHlsManifest(parsed.data, token);
+          if (refreshed?.segments[seq]) {
+            cdnUrl = refreshed.segments[seq];
+            segRes = await fetch(cdnUrl, {
+              headers: {
+                'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.youtube.com/',
+              },
+            });
+          }
+        }
+
+        if (!segRes.ok) {
+          return reply.status(segRes.status).send({
+            error: 'SEGMENT_FETCH_FAILED', statusCode: segRes.status,
+          });
+        }
+
+        reply.header('Content-Type', 'video/MP2T');
+        reply.header('Cache-Control', 'public, max-age=86400');
+        reply.header('Access-Control-Allow-Origin', '*');
+
+        const buffer = Buffer.from(await segRes.arrayBuffer());
+        return reply.send(buffer);
+      } catch (err) {
+        request.log.error({ err }, 'Failed to proxy HLS segment');
+        return reply.status(502).send({
+          error: 'SEGMENT_PROXY_ERROR', message: 'Failed to proxy HLS segment', statusCode: 502,
+        });
+      }
+    }
+  );
+
   // ── GET /api/audio/hls/playlist.m3u8 ───────────────────────────────────────
-  // Dynamic HLS playlist for continuous queue/playlist playback on iOS Safari.
-  // Resolves WebKit background suspension (Bug 173332) by letting AVPlayer
-  // manage track transitions natively in iOS mediaserverd.
+  // Backward-compatibility endpoint for legacy multi-track playlist generation.
 
   app.get(
     '/api/audio/hls/playlist.m3u8',
     { preHandler: [authMiddleware] },
     async (request, reply) => {
       const query = request.query as {
+        videoId?: string;
         tracks?: string;
         start?: string;
         token?: string;
       };
+
+      if (query.videoId) {
+        const parsed = videoIdSchema.safeParse(query.videoId);
+        if (parsed.success) {
+          const token = request.cookies?.session_token || query.token;
+          const entry = await getOrFetchHlsManifest(parsed.data, token);
+          if (entry) {
+            reply.header('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
+            reply.header('Cache-Control', 'public, max-age=3600');
+            reply.header('Access-Control-Allow-Origin', '*');
+            return reply.send(entry.manifest);
+          }
+        }
+      }
 
       const tracksParam = query.tracks || '';
       let tracks: HlsTrack[] = [];

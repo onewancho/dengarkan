@@ -140,6 +140,13 @@ interface YtdlpOutput {
   thumbnail?:  string;
   is_live?:    boolean;
   live_status?: string;
+  formats?:    Array<{
+    format_id?: string;
+    protocol?:  string;
+    vcodec?:    string;
+    acodec?:    string;
+    url?:       string;
+  }>;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -179,6 +186,11 @@ function buildStream(videoId: string, data: YtdlpOutput): AudioStream {
 
   const expiresAt = Math.min(parseExpiry(data.url), Date.now() + MAX_CACHE_MS);
 
+  // Format 234 is native 131kbps AAC HLS audio stream from YouTube
+  const hlsFormat = data.formats?.find(
+    (f) => f.format_id === '234' || (f.protocol === 'm3u8_native' && (!f.vcodec || f.vcodec === 'none'))
+  );
+
   return {
     videoId,
     streamUrl:       data.url,
@@ -191,6 +203,7 @@ function buildStream(videoId: string, data: YtdlpOutput): AudioStream {
     title:           data.title ?? data.fulltitle ?? 'Untitled Track',
     channelName:     data.uploader ?? data.channel ?? 'Unknown Artist',
     thumbnailUrl:    data.thumbnail ?? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    hlsUrl:          hlsFormat?.url,
   };
 }
 

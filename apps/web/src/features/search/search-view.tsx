@@ -16,9 +16,14 @@ import { apiClient } from "@/services/api-client";
 import { usePlayer } from "@/features/player/context";
 import { AddToPlaylistButton } from "@/features/playlists/add-to-playlist-button";
 import { parseTrackMeta } from "@/lib/track-meta";
+import { usePreference } from "./use-preference";
 
 const HISTORY_STORAGE_KEY = "dengarkan_search_history";
 const MAX_HISTORY_ITEMS = 10;
+const DEFAULT_INTERESTS = {
+  trending: ["Lagu Viral TikTok Terbaru", "Top Hits Indonesia 2026", "Lagu Galau Terpopuler", "Trending Music Global"],
+  genres: ["Pop Indonesia", "Rock", "Dangdut", "K-Pop", "Jazz", "Lo-fi", "Hip-Hop", "Indie", "EDM"],
+};
 
 export function SearchView() {
   const [query,       setQuery]       = useState("");
@@ -31,6 +36,23 @@ export function SearchView() {
 
   const latestQueryRef = React.useRef("");
   const { currentTrack, isPlaying, playTrack, addToQueue, next, playerState } = usePlayer();
+  const { preference, preferenceResults, isPrefLoading, loaded: prefLoaded, chooseInterest, resetPreference } = usePreference();
+  const [interests, setInterests] = useState<{ trending: string[]; genres: string[] }>(DEFAULT_INTERESTS);
+
+  useEffect(() => {
+    apiClient.youtube.trending().then((r) => {
+      if (r && Array.isArray(r.trending) && Array.isArray(r.genres)) setInterests(r);
+    }).catch(() => { /* keep defaults */ });
+  }, []);
+
+  const clearSearch = () => {
+    latestQueryRef.current = "";
+    setQuery("");
+    setResults([]);
+    setHasSearched(false);
+    setIsLoading(false);
+    setError(null);
+  };
 
   useEffect(() => {
     try {
@@ -129,7 +151,12 @@ export function SearchView() {
     setTimeout(() => setJustAdded(null), 1500);
   };
 
-  const isInitialState = !hasSearched && !query.trim() && results.length === 0;
+  const isSearching = Boolean(query.trim()) || hasSearched;
+  const showFeed = !isSearching && Boolean(preference);
+  const showOnboarding = !isSearching && prefLoaded && !preference;
+  const displayResults = isSearching ? results : preferenceResults;
+  const listLoading = isSearching ? isLoading : isPrefLoading;
+  const isInitialState = showOnboarding;
 
   return (
     <div
@@ -178,7 +205,7 @@ export function SearchView() {
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
-              if (!e.target.value.trim()) { setResults([]); setHasSearched(false); setError(null); }
+              if (!e.target.value.trim()) clearSearch();
             }}
             placeholder="Cari lagu, podcast, kesukaanmu…"
             className="w-full pl-11 pr-11 py-3.5 rounded-2xl bg-[#161619] border border-white/10 text-sm text-white placeholder-[#8E8E93] focus:outline-none focus:border-[#39FF14] focus:ring-1 focus:ring-[#39FF14]/30 transition-default min-h-[48px]"
@@ -186,7 +213,7 @@ export function SearchView() {
           {query && (
             <button
               type="button"
-              onClick={() => { setQuery(""); setResults([]); setHasSearched(false); setError(null); }}
+              onClick={clearSearch}
               className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-[#8E8E93] hover:text-white transition-default cursor-pointer"
               aria-label="Hapus teks pencarian"
             >
@@ -238,10 +265,60 @@ export function SearchView() {
             </div>
           </div>
         )}
+
+        {/* Neon Onboarding (no preference yet) */}
+        {showOnboarding && (
+          <div className="w-full max-w-xl mx-auto mt-6 text-center">
+            <p className="text-lg sm:text-xl font-bold text-[#39FF14] animate-pulse drop-shadow-[0_0_10px_rgba(57,255,20,0.8)]">
+              bingung mau cari lagu apa ?
+            </p>
+            <p className="text-xs sm:text-sm text-[#8E8E93] mt-2 mb-3 font-medium">yuk pilih minat kamu</p>
+            {[
+              { title: "Trending Pencarian", items: interests.trending },
+              { title: "Genre Musik", items: interests.genres },
+            ].map((group) => (
+              <div key={group.title} className="mb-3">
+                <p className="text-[11px] font-semibold text-white/60 mb-2">{group.title}</p>
+                <div className="flex flex-wrap items-center justify-center gap-1.5">
+                  {group.items.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => chooseInterest(item)}
+                      className="text-xs px-3 py-2 rounded-xl bg-[#161619] hover:bg-[#222226] active:bg-[#2c2c30] text-white/90 hover:text-[#39FF14] border border-[#39FF14]/20 hover:border-[#39FF14]/60 hover:shadow-[0_0_10px_rgba(57,255,20,0.35)] transition-default cursor-pointer min-h-[36px]"
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Preference Feed Header */}
+        {showFeed && preference && (
+          <div className="w-full max-w-xl mx-auto mt-4 flex items-center justify-between gap-2 px-1">
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-[#39FF14] drop-shadow-[0_0_8px_rgba(57,255,20,0.6)]">Rekomendasi untukmu</p>
+              <p className="text-[11px] text-[#8E8E93] truncate">
+                {preference.type === "track" ? "Mirip dengan: " : "Minat: "}
+                {preference.label}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={resetPreference}
+              className="text-[11px] font-medium text-[#8E8E93] hover:text-[#39FF14] transition-default cursor-pointer py-1 px-2 flex-shrink-0"
+            >
+              Ganti minat
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Loading Skeleton */}
-      {isLoading && (
+      {listLoading && (
         <div className="space-y-2">
           {[1, 2, 3, 4, 5].map((i) => (
             <div key={i} className="flex items-center gap-3 p-3 rounded-2xl bg-[#121214] animate-pulse border border-white/5">
@@ -256,9 +333,9 @@ export function SearchView() {
       )}
 
       {/* Results List */}
-      {!isLoading && results.length > 0 && (
+      {!listLoading && (isSearching || showFeed) && displayResults.length > 0 && (
         <div className="space-y-1.5">
-          {results.map((track) => {
+          {displayResults.map((track) => {
             const isCurrent = currentTrack?.videoId === track.videoId;
             const isAdded   = justAdded === track.videoId;
             const meta      = parseTrackMeta(track.title, track.channelName, track.durationFormatted || track.durationSeconds);
@@ -362,7 +439,7 @@ export function SearchView() {
       )}
 
       {/* Error State */}
-      {!isLoading && error && (
+      {!isLoading && isSearching && error && (
         <div className="text-center py-14">
           <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-3 text-red-400">
             <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

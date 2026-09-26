@@ -171,3 +171,96 @@ export async function searchTracks(query: string): Promise<SearchResponse> {
   return response;
 }
 
+// ── Related / "Up Next" via YouTube Mix playlist (RD<videoId>) ────────────────
+const relatedCache = new Map<string, CacheEntry>();
+const RELATED_TTL_MS = 30 * 60 * 1000;
+const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
+async function relatedWithYtDlp(videoId: string, limit = 25): Promise<SearchResult[]> {
+  const ytdlpPath = process.env.YT_DLP_PATH || process.env.YTDLP_PATH || 'yt-dlp';
+  const args = [
+    '--dump-single-json',
+    '--flat-playlist',
+    '--no-warnings',
+    '--socket-timeout', '10',
+    '--playlist-end', String(limit + 1),
+  ];
+  const configuredCookies = process.env.YT_DLP_COOKIES_PATH || process.env.YTDLP_COOKIES_PATH;
+  const candidates = [
+    configuredCookies,
+    pathResolve(process.cwd(), 'cookies.txt'),
+    pathResolve(process.cwd(), '../../cookies.txt'),
+  ].filter((p): p is string => Boolean(p && existsSync(p)));
+  if (candidates.length > 0) args.push('--cookies', candidates[0]);
+
+  args.push(`https://www.youtube.com/watch?v=${videoId}&list=RD${videoId}`);
+
+  const { stdout } = await execFileAsync(ytdlpPath, args, {
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: 15000,
+  });
+  const data = JSON.parse(stdout);
+  const entries: any[] = Array.isArray(data.entries) ? data.entries : [];
+  return entries
+    .filter((e) => e && typeof e.id === 'string' && VIDEO_ID_RE.test(e.id))
+    .map((e) => ({
+      videoId: e.id,
+      title: typeof e.title === 'string' ? e.title : 'Unknown Title',
+      channelName:
+        typeof e.channel === 'string'
+          ? e.channel
+          : typeof e.uploader === 'string'
+          ? e.uploader
+          : 'Unknown Channel',
+      thumbnailUrl: `https://i.ytimg.com/vi/${e.id}/hqdefault.jpg`,
+      durationSeconds: typeof e.duration === 'number' ? e.duration : 0,
+      durationFormatted:
+        typeof e.duration === 'number' && e.duration > 0 ? formatSeconds(e.duration) : '0:00',
+    }));
+}
+
+export async function relatedTracks(videoId: string, hint?: string): Promise<SearchResponse> {
+  if (!VIDEO_ID_RE.test(videoId)) return { query: videoId, results: [] };
+
+  const cached = relatedCache.get(videoId);
+  if (cached && Date.now() < cached.expiresAt) return cached.response;
+
+  let results: SearchResult[] = [];
+  try {
+    results = await relatedWithYtDlp(videoId);
+  } catch {
+    results = [];
+  }
+
+  if (results.length === 0 && hint && hint.trim()) {
+    try {
+      results = (await searchTracks(`${hint.trim().slice(0, 100)} mix`)).results;
+    } catch {
+      results = [];
+    }
+  }
+
+  results = results.filter((r) => r.videoId !== videoId);
+  const response: SearchResponse = { query: videoId, results };
+
+  if (results.length > 0) {
+    if (relatedCache.size >= MAX_CACHE_ENTRIES) {
+      const oldestKey = relatedCache.keys().next().value;
+      if (oldestKey) relatedCache.delete(oldestKey);
+    }
+    relatedCache.set(videoId, { response, expiresAt: Date.now() + RELATED_TTL_MS });
+  }
+  return response;
+}
+
+// ── Onboarding interests (trending + genres) ──────────────────────────────────
+export const TRENDING_INTERESTS = {
+  trending: [
+    'Lagu Viral TikTok Terbaru',
+    'Top Hits Indonesia 2026',
+    'Lagu Galau Terpopuler',
+    'Trending Music Global',
+  ],
+  genres: ['Pop Indonesia', 'Rock', 'Dangdut', 'K-Pop', 'Jazz', 'Lo-fi', 'Hip-Hop', 'Indie', 'EDM'],
+};
+

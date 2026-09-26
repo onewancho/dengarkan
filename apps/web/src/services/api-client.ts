@@ -70,6 +70,10 @@ export const apiClient = {
   youtube: {
     search: (q: string): Promise<SearchResponse> =>
       request(`/api/youtube/search?${new URLSearchParams({ q })}`),
+    related: (videoId: string, hint?: string): Promise<SearchResponse> =>
+      request(`/api/youtube/related?${new URLSearchParams(hint ? { videoId, hint } : { videoId })}`),
+    trending: (): Promise<{ trending: string[]; genres: string[] }> =>
+      request(`/api/youtube/trending`),
   },
 
   audio: {

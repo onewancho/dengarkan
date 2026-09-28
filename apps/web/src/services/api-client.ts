@@ -178,6 +178,13 @@ export const apiClient = {
       logs: AdminSystemLogEntry[];
       metrics: AdminSystemMetrics;
     }> => request("/api/admin/system-logs"),
+
+    clearSystemLogs: (): Promise<{
+      success: boolean;
+      message: string;
+      logs: AdminSystemLogEntry[];
+      metrics: AdminSystemMetrics;
+    }> => request("/api/admin/system-logs/clear", { method: "POST" }),
   },
 };
 
@@ -205,4 +212,10 @@ export interface AdminSystemMetrics {
   heapUsedMb: number;
   heapTotalMb: number;
   uptimeSec: number;
+  systemTotalMemMb: number;
+  systemUsedMemMb: number;
+  systemMemPercent: number;
+  systemCpuPercent: number;
+  systemLoadAvg: number;
+  cpuCores: number;
 }

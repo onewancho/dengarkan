@@ -314,4 +314,15 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       metrics: systemLog.getMetrics(),
     });
   });
+
+  // ── POST /api/admin/system-logs/clear ────────────────────────────────────
+  app.post('/api/admin/system-logs/clear', async (_request, reply) => {
+    systemLog.clear();
+    return reply.status(200).send({
+      success: true,
+      message: 'Log buffer berhasil dibersihkan',
+      logs: systemLog.getLogs(),
+      metrics: systemLog.getMetrics(),
+    });
+  });
 };

@@ -62,6 +62,13 @@ function formatUptime(sec: number): string {
   return `${seconds}s`;
 }
 
+function formatMemoryMb(mb: number): string {
+  if (mb >= 1024) {
+    return `${(mb / 1024).toFixed(1)} GB`;
+  }
+  return `${mb} MB`;
+}
+
 export default function AdminAccountsPage() {
   const [activeTab, setActiveTab] = useState<"accounts" | "logs">("accounts");
 
@@ -77,7 +84,10 @@ export default function AdminAccountsPage() {
   const [metrics, setMetrics] = useState<AdminSystemMetrics | null>(null);
   const [isLogsLoading, setIsLogsLoading] = useState(false);
   const [logLevelFilter, setLogLevelFilter] = useState<"ALL" | "INFO" | "WARN" | "ERROR">("ALL");
+  const [logSearchQuery, setLogSearchQuery] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
+  const [isPollingActive, setIsPollingActive] = useState(true);
+  const [isClearingLogs, setIsClearingLogs] = useState(false);
   const terminalEndRef = React.useRef<HTMLDivElement>(null);
 
   // Active Menu popover target
@@ -147,14 +157,14 @@ export default function AdminAccountsPage() {
     }
   }, []);
 
-  // Polling logs every 3s when tab is 'logs'
+  // Polling logs every 3s when tab is 'logs' and isPollingActive is true
   useEffect(() => {
     if (activeTab !== "logs") return;
-    setIsLogsLoading(true);
+    if (!isPollingActive) return;
     fetchLogs();
     const interval = setInterval(fetchLogs, 3000);
     return () => clearInterval(interval);
-  }, [activeTab, fetchLogs]);
+  }, [activeTab, isPollingActive, fetchLogs]);
 
   // Auto-scroll effect
   useEffect(() => {
@@ -163,11 +173,39 @@ export default function AdminAccountsPage() {
     }
   }, [logs, autoScroll, activeTab]);
 
-  // Filter logs by level
+  // Filter logs by level & search query
   const filteredLogs = useMemo(() => {
-    if (logLevelFilter === "ALL") return logs;
-    return logs.filter((l) => l.level.toUpperCase() === logLevelFilter);
-  }, [logs, logLevelFilter]);
+    let result = logs;
+    if (logLevelFilter !== "ALL") {
+      result = result.filter((l) => l.level.toUpperCase() === logLevelFilter);
+    }
+    if (logSearchQuery.trim()) {
+      const q = logSearchQuery.toLowerCase();
+      result = result.filter(
+        (l) =>
+          l.tag.toLowerCase().includes(q) ||
+          l.message.toLowerCase().includes(q) ||
+          (l.details && JSON.stringify(l.details).toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }, [logs, logLevelFilter, logSearchQuery]);
+
+  const handleClearLogs = async () => {
+    if (!window.confirm("Kosongkan semua log buffer sistem di memori server?")) return;
+    setIsClearingLogs(true);
+    try {
+      const res = await apiClient.admin.clearSystemLogs();
+      setLogs(res.logs);
+      setMetrics(res.metrics);
+      showToast("Log buffer sistem berhasil dikosongkan.");
+    } catch (err: unknown) {
+      const msg = extractErrorMessage(err, "Gagal membersihkan log sistem.");
+      showToast(msg);
+    } finally {
+      setIsClearingLogs(false);
+    }
+  };
 
   // Close 3-dots menu on outside click
   useEffect(() => {
@@ -637,71 +675,225 @@ export default function AdminAccountsPage() {
               </p>
             </div>
 
-            {/* Live Polling Status Badge */}
-            <div className="flex items-center gap-2 self-start sm:self-auto px-3 py-1.5 rounded-xl bg-[#161619] border border-white/10 text-xs">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#39FF14] opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-[#39FF14]"></span>
-              </span>
-              <span className="text-[#39FF14] font-mono text-[11px] font-semibold">
-                Polling Aktif (3s)
-              </span>
+            {/* Live Polling Status & Toggle Button */}
+            <div className="flex items-center gap-2 self-start sm:self-auto">
+              <button
+                onClick={() => setIsPollingActive(!isPollingActive)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-mono font-medium transition-all cursor-pointer ${
+                  isPollingActive
+                    ? "bg-[#161619] border-[#39FF14]/30 text-[#39FF14] hover:bg-[#39FF14]/10"
+                    : "bg-[#161619] border-[#FFCC00]/30 text-[#FFCC00] hover:bg-[#FFCC00]/10"
+                }`}
+                title={isPollingActive ? "Klik untuk menjeda polling" : "Klik untuk melanjutkan polling"}
+              >
+                <span className="relative flex h-2 w-2">
+                  {isPollingActive && (
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#39FF14] opacity-75"></span>
+                  )}
+                  <span
+                    className={`relative inline-flex rounded-full h-2 w-2 ${
+                      isPollingActive ? "bg-[#39FF14]" : "bg-[#FFCC00]"
+                    }`}
+                  ></span>
+                </span>
+                <span className="text-[11px] font-semibold">
+                  {isPollingActive ? "Polling Aktif (3s)" : "Polling Dijeda"}
+                </span>
+                <span className="text-[10px] text-[#8E8E93] ml-1">
+                  {isPollingActive ? "⏸" : "▶"}
+                </span>
+              </button>
             </div>
           </div>
 
-          {/* System Metrics Chips */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
-              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Node Heap</span>
-              <span className="text-sm font-bold font-mono text-white mt-0.5">
-                {metrics ? `${metrics.heapUsedMb} MB / ${metrics.heapTotalMb} MB` : "—"}
+          {/* System Metrics Chips — 6 Responsive Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+            {/* 1. System CPU */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium flex items-center justify-between">
+                <span>System CPU</span>
+                <span className="text-[9px] text-[#8E8E93] lowercase">{metrics?.cpuCores ?? 1} core</span>
               </span>
-            </div>
-            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
-              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Process RSS</span>
-              <span className="text-sm font-bold font-mono text-[#39FF14] mt-0.5">
-                {metrics ? `${metrics.rssMb} MB` : "—"}
-              </span>
-            </div>
-            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
-              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Server Uptime</span>
-              <span className="text-sm font-bold font-mono text-cyan-400 mt-0.5">
-                {metrics ? formatUptime(metrics.uptimeSec) : "—"}
-              </span>
-            </div>
-            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col">
-              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Total Baris</span>
-              <span className="text-sm font-bold font-mono text-white mt-0.5">
-                {logs.length} / 500
-              </span>
-            </div>
-          </div>
-
-          {/* Controls Bar: Filter, AutoScroll & Refresh */}
-          <div className="flex flex-wrap items-center justify-between gap-2.5 p-2 rounded-xl bg-[#161619] border border-white/10">
-            {/* Filter buttons */}
-            <div className="flex items-center gap-1">
-              {(["ALL", "INFO", "WARN", "ERROR"] as const).map((lvl) => (
-                <button
-                  key={lvl}
-                  onClick={() => setLogLevelFilter(lvl)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-semibold transition-all cursor-pointer ${
-                    logLevelFilter === lvl
-                      ? lvl === "ERROR"
-                        ? "bg-[#FF3B30]/25 text-[#FF3B30] border border-[#FF3B30]/40"
-                        : lvl === "WARN"
-                        ? "bg-[#FFCC00]/25 text-[#FFCC00] border border-[#FFCC00]/40"
-                        : "bg-[#39FF14]/20 text-[#39FF14] border border-[#39FF14]/30"
-                      : "text-[#8E8E93] hover:text-white hover:bg-white/5"
+              <div className="mt-1">
+                <span
+                  className={`text-sm font-bold font-mono ${
+                    (metrics?.systemCpuPercent ?? 0) > 85
+                      ? "text-[#FF3B30]"
+                      : (metrics?.systemCpuPercent ?? 0) > 65
+                      ? "text-[#FFCC00]"
+                      : "text-[#39FF14]"
                   }`}
                 >
-                  {lvl}
-                </button>
-              ))}
+                  {metrics ? `${metrics.systemCpuPercent}%` : "—"}
+                </span>
+                <span className="text-[10px] text-[#8E8E93] font-mono block mt-0.5">
+                  Load: {metrics?.systemLoadAvg ?? 0}
+                </span>
+              </div>
+              <div className="w-full bg-white/10 h-1 rounded-full mt-2 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    (metrics?.systemCpuPercent ?? 0) > 85
+                      ? "bg-[#FF3B30]"
+                      : (metrics?.systemCpuPercent ?? 0) > 65
+                      ? "bg-[#FFCC00]"
+                      : "bg-[#39FF14]"
+                  }`}
+                  style={{ width: `${Math.min(100, metrics?.systemCpuPercent ?? 0)}%` }}
+                />
+              </div>
+            </div>
+
+            {/* 2. System RAM */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium flex items-center justify-between">
+                <span>System RAM</span>
+                <span
+                  className={`text-[9px] font-mono font-bold ${
+                    (metrics?.systemMemPercent ?? 0) > 85
+                      ? "text-[#FF3B30]"
+                      : (metrics?.systemMemPercent ?? 0) > 70
+                      ? "text-[#FFCC00]"
+                      : "text-[#39FF14]"
+                  }`}
+                >
+                  {metrics ? `${metrics.systemMemPercent}%` : "—"}
+                </span>
+              </span>
+              <div className="mt-1">
+                <span className="text-xs font-bold font-mono text-white">
+                  {metrics
+                    ? `${formatMemoryMb(metrics.systemUsedMemMb)} / ${formatMemoryMb(metrics.systemTotalMemMb)}`
+                    : "—"}
+                </span>
+                <div className="w-full bg-white/10 h-1 rounded-full mt-1.5 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      (metrics?.systemMemPercent ?? 0) > 85
+                        ? "bg-[#FF3B30]"
+                        : (metrics?.systemMemPercent ?? 0) > 70
+                        ? "bg-[#FFCC00]"
+                        : "bg-[#39FF14]"
+                    }`}
+                    style={{ width: `${Math.min(100, metrics?.systemMemPercent ?? 0)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Node Heap */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Node Heap</span>
+              <div className="mt-1">
+                <span className="text-xs font-bold font-mono text-white">
+                  {metrics ? `${metrics.heapUsedMb} MB / ${metrics.heapTotalMb} MB` : "—"}
+                </span>
+                <span className="text-[10px] text-[#8E8E93] font-mono block mt-0.5">
+                  V8 JS Engine
+                </span>
+              </div>
+            </div>
+
+            {/* 4. Process RSS */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Process RSS</span>
+              <div className="mt-1">
+                <span className="text-sm font-bold font-mono text-[#39FF14]">
+                  {metrics ? `${metrics.rssMb} MB` : "—"}
+                </span>
+                <span className="text-[10px] text-[#8E8E93] font-mono block mt-0.5">
+                  Alokasi Memori
+                </span>
+              </div>
+            </div>
+
+            {/* 5. Server Uptime */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Server Uptime</span>
+              <div className="mt-1">
+                <span className="text-sm font-bold font-mono text-cyan-400">
+                  {metrics ? formatUptime(metrics.uptimeSec) : "—"}
+                </span>
+                <span className="text-[10px] text-[#8E8E93] font-mono block mt-0.5">
+                  Waktu Aktif
+                </span>
+              </div>
+            </div>
+
+            {/* 6. Ring Buffer Log */}
+            <div className="p-3 rounded-xl bg-[#161619] border border-white/5 flex flex-col justify-between">
+              <span className="text-[10px] text-[#8E8E93] uppercase tracking-wider font-medium">Total Baris</span>
+              <div className="mt-1">
+                <span className="text-sm font-bold font-mono text-white">
+                  {logs.length} <span className="text-[10px] text-[#8E8E93] font-normal">/ 500</span>
+                </span>
+                <span className="text-[10px] text-[#8E8E93] font-mono block mt-0.5">
+                  In-Memory RAM
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Controls Bar: Filter, Search, AutoScroll, Clear & Refresh */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5 p-2 rounded-xl bg-[#161619] border border-white/10">
+            {/* Filter buttons & Search */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1">
+                {(["ALL", "INFO", "WARN", "ERROR"] as const).map((lvl) => (
+                  <button
+                    key={lvl}
+                    onClick={() => setLogLevelFilter(lvl)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-semibold transition-all cursor-pointer ${
+                      logLevelFilter === lvl
+                        ? lvl === "ERROR"
+                          ? "bg-[#FF3B30]/25 text-[#FF3B30] border border-[#FF3B30]/40"
+                          : lvl === "WARN"
+                          ? "bg-[#FFCC00]/25 text-[#FFCC00] border border-[#FFCC00]/40"
+                          : "bg-[#39FF14]/20 text-[#39FF14] border border-[#39FF14]/30"
+                        : "text-[#8E8E93] hover:text-white hover:bg-white/5"
+                    }`}
+                  >
+                    {lvl}
+                  </button>
+                ))}
+              </div>
+
+              {/* Quick Search */}
+              <div className="relative">
+                <input
+                  type="text"
+                  value={logSearchQuery}
+                  onChange={(e) => setLogSearchQuery(e.target.value)}
+                  placeholder="Filter teks / tag..."
+                  className="w-36 sm:w-48 px-2.5 py-1 text-[11px] rounded-lg bg-[#202024] border border-white/10 text-white placeholder-[#8E8E93] focus:outline-none focus:border-[#39FF14]/60 font-mono"
+                />
+                {logSearchQuery && (
+                  <button
+                    onClick={() => setLogSearchQuery("")}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-[#8E8E93] hover:text-white"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Right action controls */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              {/* Clear Logs Button */}
+              <button
+                onClick={handleClearLogs}
+                disabled={isClearingLogs || logs.length === 0}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-mono transition-all cursor-pointer border border-white/10 bg-white/5 text-[#8E8E93] hover:text-[#FF3B30] hover:border-[#FF3B30]/30 hover:bg-[#FF3B30]/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Kosongkan buffer log di memori server"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+                <span className="hidden sm:inline">Clear</span>
+              </button>
+
               {/* Auto Scroll Toggle */}
               <button
                 onClick={() => setAutoScroll(!autoScroll)}
@@ -722,12 +914,13 @@ export default function AdminAccountsPage() {
               {/* Refresh Button */}
               <button
                 onClick={fetchLogs}
-                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-[#8E8E93] hover:text-white text-[11px] font-mono transition-default cursor-pointer"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-[#8E8E93] hover:text-white text-[11px] font-mono transition-default cursor-pointer border border-white/10"
                 title="Refresh log manual"
               >
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
                 </svg>
+                <span className="hidden sm:inline">Refresh</span>
               </button>
             </div>
           </div>
@@ -743,12 +936,12 @@ export default function AdminAccountsPage() {
                 <span className="text-[11px] text-[#8E8E93] font-mono ml-2">dengarkan-server-logs ~ ring-buffer</span>
               </div>
               <span className="text-[10px] text-[#8E8E93] font-mono">
-                {filteredLogs.length} entri ditampilkan
+                {filteredLogs.length} dari {logs.length} entri ditampilkan
               </span>
             </div>
 
             {/* Terminal Body */}
-            <div className="p-3.5 sm:p-4 max-h-[480px] min-h-[300px] overflow-y-auto font-mono text-[11px] leading-relaxed space-y-1.5 select-text">
+            <div className="p-3.5 sm:p-4 max-h-[500px] min-h-[300px] overflow-y-auto font-mono text-[11px] leading-relaxed space-y-1.5 select-text">
               {isLogsLoading && logs.length === 0 ? (
                 <div className="py-12 flex flex-col items-center justify-center gap-2 text-[#8E8E93]">
                   <div className="w-5 h-5 border-2 border-[#39FF14] border-t-transparent rounded-full animate-spin" />
@@ -756,7 +949,7 @@ export default function AdminAccountsPage() {
                 </div>
               ) : filteredLogs.length === 0 ? (
                 <div className="py-12 text-center text-[#8E8E93]">
-                  <span>Tidak ada log untuk filter "{logLevelFilter}".</span>
+                  <span>Tidak ada log yang cocok dengan filter.</span>
                 </div>
               ) : (
                 filteredLogs.map((entry) => {
@@ -766,7 +959,7 @@ export default function AdminAccountsPage() {
                   return (
                     <div
                       key={entry.id}
-                      className={`flex items-start gap-2 py-0.5 px-1 rounded transition-colors ${
+                      className={`flex flex-col py-1 px-1.5 rounded transition-colors ${
                         isErr
                           ? "bg-[#FF3B30]/10 text-red-300"
                           : isWarn
@@ -774,43 +967,64 @@ export default function AdminAccountsPage() {
                           : "hover:bg-white/5 text-gray-200"
                       }`}
                     >
-                      {/* Timestamp */}
-                      <span className="text-[#6C6C70] flex-shrink-0 select-none">
-                        [{entry.timestamp}]
-                      </span>
+                      <div className="flex items-start gap-2">
+                        {/* Timestamp */}
+                        <span className="text-[#6C6C70] flex-shrink-0 select-none">
+                          [{entry.timestamp}]
+                        </span>
 
-                      {/* Level Badge */}
-                      <span
-                        className={`flex-shrink-0 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase select-none ${
-                          isErr
-                            ? "bg-[#FF3B30]/20 text-[#FF3B30] border border-[#FF3B30]/40"
-                            : isWarn
-                            ? "bg-[#FFCC00]/20 text-[#FFCC00] border border-[#FFCC00]/40"
-                            : "bg-[#39FF14]/15 text-[#39FF14] border border-[#39FF14]/30"
-                        }`}
-                      >
-                        {entry.level}
-                      </span>
+                        {/* Level Badge */}
+                        <span
+                          className={`flex-shrink-0 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase select-none ${
+                            isErr
+                              ? "bg-[#FF3B30]/20 text-[#FF3B30] border border-[#FF3B30]/40"
+                              : isWarn
+                              ? "bg-[#FFCC00]/20 text-[#FFCC00] border border-[#FFCC00]/40"
+                              : "bg-[#39FF14]/15 text-[#39FF14] border border-[#39FF14]/30"
+                          }`}
+                        >
+                          {entry.level}
+                        </span>
 
-                      {/* Tag Badge */}
-                      <span
-                        className={`flex-shrink-0 font-bold ${
-                          entry.tag === "AUDIO_ROUTING"
-                            ? "text-purple-400"
-                            : entry.tag === "YTDLP"
-                            ? "text-sky-400"
-                            : entry.tag === "TRENDING"
-                            ? "text-emerald-400"
-                            : "text-[#8E8E93]"
-                        }`}
-                      >
-                        [{entry.tag}]
-                      </span>
+                        {/* Tag Badge */}
+                        <span
+                          className={`flex-shrink-0 font-bold ${
+                            entry.tag === "AUDIO_ROUTING"
+                              ? "text-purple-400"
+                              : entry.tag === "YTDLP"
+                              ? "text-sky-400"
+                              : entry.tag === "TRENDING"
+                              ? "text-emerald-400"
+                              : entry.tag === "AUTH"
+                              ? "text-amber-400"
+                              : entry.tag === "PROXY"
+                              ? "text-orange-400"
+                              : entry.tag === "STREAM_REQ"
+                              ? "text-cyan-400"
+                              : entry.tag === "STREAM_CDN"
+                              ? "text-indigo-400"
+                              : entry.tag === "STREAM_OUT"
+                              ? "text-teal-400"
+                              : entry.tag === "SYSTEM"
+                              ? "text-blue-400"
+                              : "text-[#8E8E93]"
+                          }`}
+                        >
+                          [{entry.tag}]
+                        </span>
 
-                      {/* Message */}
-                      <span className="flex-1 break-all font-mono">
-                        {entry.message}
-                      </span>
+                        {/* Message */}
+                        <span className="flex-1 break-all font-mono">
+                          {entry.message}
+                        </span>
+                      </div>
+
+                      {/* Optional Details JSON */}
+                      {entry.details && Object.keys(entry.details).length > 0 && (
+                        <div className="ml-7 sm:ml-9 mt-1 p-2 rounded bg-black/40 border border-white/5 text-[10px] text-[#8E8E93] overflow-x-auto">
+                          <pre>{JSON.stringify(entry.details, null, 2)}</pre>
+                        </div>
+                      )}
                     </div>
                   );
                 })

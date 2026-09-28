@@ -527,6 +527,28 @@ export function useAudioEngine(): AudioEngine {
     return { oldActive, newActive };
   }, []);
 
+  const getTrueNextTrack = useCallback((customNext?: PlayableTrack | null): PlayableTrack | null => {
+    if (customNext) return customNext;
+    const { queue, history } = queueStateRef.current;
+    if (queue.length > 0) return queue[0];
+
+    if (repeatModeRef.current === "all") {
+      if (repeatCycleRef.current && repeatCycleRef.current.length > 0) {
+        return repeatCycleRef.current[0];
+      }
+      if (masterPlaylistRef.current.length > 0) {
+        return masterPlaylistRef.current[0];
+      }
+      if (history.length > 0) {
+        return history[history.length - 1];
+      }
+      if (currentTrackRef.current) {
+        return currentTrackRef.current;
+      }
+    }
+    return null;
+  }, []);
+
   /**
    * Initial user gesture unlock:
    * WebKit on iOS requires a user gesture to grant autoplay permission.
@@ -765,7 +787,7 @@ export function useAudioEngine(): AudioEngine {
 
     const nextCandidate = overrideSequence && overrideSequence.length > 1
       ? overrideSequence[1]
-      : (queueStateRef.current.queue.length > 0 ? queueStateRef.current.queue[0] : null);
+      : getTrueNextTrack();
     syncStandbyPreload(nextCandidate);
 
     if (cachedStream) {
@@ -788,7 +810,7 @@ export function useAudioEngine(): AudioEngine {
           console.warn("Background fetchStreamWithCache failed:", err);
         });
     }
-  }, [ensureBothUnlocked, getActiveAudio, syncStandbyPreload]);
+  }, [ensureBothUnlocked, getActiveAudio, getTrueNextTrack, syncStandbyPreload]);
 
   const loadTrack = useCallback(async (track: PlayableTrack) => {
     await directLoadTrack(track);
@@ -881,13 +903,7 @@ export function useAudioEngine(): AudioEngine {
     // destroying or removing 'src' (which breaks CoreAudio hardware decoder on iOS).
     ensureBothUnlocked();
     if (repeatModeRef.current !== "one") {
-      const nextCandidate = getNextTrackCandidate(
-        queueStateRef.current.queue,
-        queueStateRef.current.history,
-        currentTrackRef.current,
-        repeatModeRef.current,
-        shuffleOnRef.current
-      );
+      const nextCandidate = getTrueNextTrack();
       if (nextCandidate) {
         const standby = getStandbyAudio();
         if (standby) {
@@ -922,7 +938,7 @@ export function useAudioEngine(): AudioEngine {
         console.warn("Failed to seek audio:", err);
       }
     }
-  }, [ensureBothUnlocked, getActiveAudio, getStandbyAudio]);
+  }, [ensureBothUnlocked, getActiveAudio, getStandbyAudio, getTrueNextTrack]);
 
   const setVolume = useCallback((v: number) => {
     const clamped = Math.max(0, Math.min(1, v));
@@ -1166,6 +1182,21 @@ export function useAudioEngine(): AudioEngine {
         }
       }
 
+      // Fallback via getTrueNextTrack before triggering The Smart Guard / Clean Stop:
+      if (!nextTrack) {
+        const fallbackNext = getTrueNextTrack();
+        if (fallbackNext) {
+          nextTrack = fallbackNext;
+          const fullCycle = masterPlaylistRef.current.length > 0
+            ? masterPlaylistRef.current
+            : (allTracksRef.current.length > 0
+                ? allTracksRef.current
+                : [...[...history].reverse(), current].filter((t): t is PlayableTrack => Boolean(t)));
+          const idx = fullCycle.findIndex((t) => t.videoId === fallbackNext.videoId);
+          newQueue = idx !== -1 ? fullCycle.slice(idx + 1) : [];
+        }
+      }
+
       // If no next track (end of queue in repeat=none)
       if (!nextTrack) {
         dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
@@ -1324,7 +1355,7 @@ export function useAudioEngine(): AudioEngine {
       isAdvancingRef.current = false;
       isAutoAdvancingRef.current = false;
     }
-  }, [getActiveAudio, getStandbyAudio, switchActiveSlot, directLoadTrack, syncStandbyPreload, volume]);
+  }, [getActiveAudio, getStandbyAudio, getTrueNextTrack, switchActiveSlot, directLoadTrack, syncStandbyPreload, volume]);
 
   const advancePrev = useCallback(async () => {
     wakeLockGuardRef.current = false;

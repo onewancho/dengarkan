@@ -249,6 +249,9 @@ export function shuffleArray<T>(items: T[], ensureDifferentFirst = false): T[] {
 type QueueAction =
   | { type: "ADD";    track: PlayableTrack }
   | { type: "REMOVE"; index: number }
+  | { type: "REMOVE_FROM_HISTORY"; index: number }
+  | { type: "DISCARD_CURRENT_AND_ADVANCE_NEXT" }
+  | { type: "DISCARD_CURRENT_AND_ADVANCE_PREV" }
   | { type: "CLEAR" }
   | { type: "CLEAR_ALL" }
   | {
@@ -280,8 +283,35 @@ function queueReducer(state: QueueState, action: QueueAction): QueueState {
     case "ADD":
       return { ...state, queue: [...state.queue, action.track] };
 
-    case "REMOVE":
-      return { ...state, queue: state.queue.filter((_, i) => i !== action.index) };
+    case "REMOVE": {
+      const newQueue = state.queue.filter((_, i) => i !== action.index);
+      return { ...state, queue: newQueue, nextTrack: newQueue[0] ?? null };
+    }
+
+    case "REMOVE_FROM_HISTORY":
+      return { ...state, history: state.history.filter((_, i) => i !== action.index) };
+
+    case "DISCARD_CURRENT_AND_ADVANCE_NEXT": {
+      if (state.queue.length === 0) return state;
+      const [next, ...newQueue] = state.queue;
+      return {
+        ...state,
+        queue: newQueue,
+        // Crucial: current track is discarded, NEVER pushed to history!
+        nextTrack: newQueue[0] ?? null,
+      };
+    }
+
+    case "DISCARD_CURRENT_AND_ADVANCE_PREV": {
+      if (state.history.length === 0) return state;
+      const [prev, ...newHistory] = state.history;
+      return {
+        ...state,
+        history: newHistory,
+        // Crucial: current track is discarded, NEVER pushed to queue!
+        nextTrack: state.queue[0] ?? null,
+      };
+    }
 
     case "CLEAR":
       return { ...state, queue: [] };
@@ -437,6 +467,7 @@ export function useAudioEngine(): AudioEngine {
   const refreshingRef      = useRef(false);
   const isAdvancingRef     = useRef(false);
   const lastAdvanceTimeRef = useRef(0);
+  const wakeLockGuardRef   = useRef(false);
   const advanceNextRef     = useRef<() => Promise<void>>(() => Promise.resolve());
   const advancePrevRef     = useRef<() => Promise<void>>(() => Promise.resolve());
 
@@ -657,8 +688,10 @@ export function useAudioEngine(): AudioEngine {
   const directLoadTrack = useCallback(async (
     track: PlayableTrack,
     overrideSequence?: PlayableTrack[],
-    startOffsetSeconds?: number
+    startOffsetSeconds?: number,
+    autoPlay: boolean = true
   ): Promise<void> => {
+    wakeLockGuardRef.current = false;
     ensureBothUnlocked();
 
     currentTrackRef.current = track;
@@ -687,7 +720,7 @@ export function useAudioEngine(): AudioEngine {
           album:   meta.channelName || "Dengarkan",
           artwork: buildArtwork(track.thumbnailUrl),
         });
-        navigator.mediaSession.playbackState = "playing";
+        navigator.mediaSession.playbackState = autoPlay ? "playing" : "paused";
         if (initialDuration > 0 && audio) {
           safeSetPositionState(audio, initialDuration, startOffsetSeconds || 0);
         }
@@ -704,7 +737,6 @@ export function useAudioEngine(): AudioEngine {
       }
 
       console.log(`[SONG CHANGED] Slot ${activeAudioSlotRef.current} | Judul: ${track.title} | Artis: ${track.channelName || "Dengarkan"}`);
-      console.log(`[MEDIA EVENT] PLAY | Time: ${audio.currentTime.toFixed(1)}s / ${initialDuration.toFixed(1)}s | Paused: false`);
 
       if (typeof startOffsetSeconds === "number" && startOffsetSeconds > 0) {
         try {
@@ -712,15 +744,22 @@ export function useAudioEngine(): AudioEngine {
         } catch { /* ignore InvalidStateError in Safari */ }
       }
 
-      setPlayerState("playing");
-      try {
-        const playPromise = audio.play();
-        if (playPromise) {
-          await playPromise;
+      if (autoPlay) {
+        console.log(`[MEDIA EVENT] PLAY | Time: ${audio.currentTime.toFixed(1)}s / ${initialDuration.toFixed(1)}s | Paused: false`);
+        setPlayerState("playing");
+        try {
+          const playPromise = audio.play();
+          if (playPromise) {
+            await playPromise;
+          }
+        } catch (e) {
+          isAdvancingRef.current = false;
+          console.warn("Audio play failed on direct load:", e);
         }
-      } catch (e) {
-        isAdvancingRef.current = false;
-        console.warn("Audio play failed on direct load:", e);
+      } else {
+        audio.pause();
+        audio.currentTime = 0;
+        setPlayerState("paused");
       }
     }
 
@@ -756,6 +795,7 @@ export function useAudioEngine(): AudioEngine {
   }, [directLoadTrack]);
 
   const playTrack = useCallback(async (track: PlayableTrack, resetQueue = false) => {
+    wakeLockGuardRef.current = false;
     repeatCycleRef.current = null;
     if (resetQueue) {
       masterPlaylistRef.current = [track];
@@ -774,6 +814,7 @@ export function useAudioEngine(): AudioEngine {
     tracks: PlayableTrack[],
     startIndex: number = 0,
   ) => {
+    wakeLockGuardRef.current = false;
     if (tracks.length === 0) return;
     const idx     = Math.max(0, Math.min(startIndex, tracks.length - 1));
     const current = tracks[idx];
@@ -787,6 +828,7 @@ export function useAudioEngine(): AudioEngine {
   // ── Controls ──────────────────────────────────────────────────────────────
 
   const play = useCallback(async () => {
+    wakeLockGuardRef.current = false;
     ensureBothUnlocked();
     const audio = getActiveAudio();
     if (!audio) return;
@@ -803,6 +845,7 @@ export function useAudioEngine(): AudioEngine {
   }, [getActiveAudio]);
 
   const toggle = useCallback(async () => {
+    wakeLockGuardRef.current = false;
     ensureBothUnlocked();
     const audio = getActiveAudio();
     if (!audio || !currentTrackRef.current) return;
@@ -825,13 +868,44 @@ export function useAudioEngine(): AudioEngine {
   }, [getActiveAudio]);
 
   const seek = useCallback(async (seconds: number) => {
+    wakeLockGuardRef.current = false;
     const audio = getActiveAudio();
     if (!audio || !isFinite(seconds)) return;
 
     const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
     const dur = getCanonicalDuration(meta, audio.duration);
 
-    if (isFinite(dur) && dur > 0 && seconds >= dur - 0.5) {
+    // ── Gentle Preload Hijack (Apple User Gesture Token) ─────────
+    // When the user interacts with the seek slider, that interaction is an authorized
+    // WebKit User Gesture. We gently load the next candidate on standbyAudio without
+    // destroying or removing 'src' (which breaks CoreAudio hardware decoder on iOS).
+    ensureBothUnlocked();
+    if (repeatModeRef.current !== "one") {
+      const nextCandidate = getNextTrackCandidate(
+        queueStateRef.current.queue,
+        queueStateRef.current.history,
+        currentTrackRef.current,
+        repeatModeRef.current,
+        shuffleOnRef.current
+      );
+      if (nextCandidate) {
+        const standby = getStandbyAudio();
+        if (standby) {
+          const streamUrl = getProxyStreamUrl(nextCandidate.videoId);
+          standby.pause();
+          standby.loop = false;
+          standby.preload = "auto";
+          standby.src = streamUrl;
+          standby.load();
+          standby.pause(); // Mutelock: Guarantee standby stays paused
+          standbyPreloadedTrackRef.current = { videoId: nextCandidate.videoId, url: streamUrl };
+          console.log(`[PRELOAD HIJACK] Gently buffered next track: ${nextCandidate.title}`);
+        }
+        void fetchStreamWithCache(nextCandidate.videoId);
+      }
+    }
+
+    if (isFinite(dur) && dur > 0 && seconds >= dur - 1.0) {
       void advanceNextRef.current();
       return;
     }
@@ -840,7 +914,7 @@ export function useAudioEngine(): AudioEngine {
     if (isFinite(target)) {
       try {
         audio.currentTime = target;
-        if (playerStateRef.current === "playing" && audio.paused) {
+        if (playerStateRef.current === "playing") {
           const playPromise = audio.play();
           if (playPromise) await playPromise;
         }
@@ -848,7 +922,7 @@ export function useAudioEngine(): AudioEngine {
         console.warn("Failed to seek audio:", err);
       }
     }
-  }, [getActiveAudio]);
+  }, [ensureBothUnlocked, getActiveAudio, getStandbyAudio]);
 
   const setVolume = useCallback((v: number) => {
     const clamped = Math.max(0, Math.min(1, v));
@@ -869,6 +943,7 @@ export function useAudioEngine(): AudioEngine {
   }, [getActiveAudio]);
 
   const clear = useCallback(() => {
+    wakeLockGuardRef.current = false;
     standbyPreloadedTrackRef.current = null;
     if (audioARef.current) {
       audioARef.current.pause();
@@ -908,42 +983,51 @@ export function useAudioEngine(): AudioEngine {
   }, [playTrack]);
 
   const removeFromQueue = useCallback((index: number) => {
+    wakeLockGuardRef.current = false;
     const all = allTracksRef.current;
     if (index < 0 || index >= all.length) return;
 
-    const curIdx = currentTrackRef.current ? queueStateRef.current.history.length : -1;
+    const historyLen = queueStateRef.current.history.length;
+    const curIdx = currentTrackRef.current ? historyLen : -1;
 
     if (index === curIdx) {
-      if (queueStateRef.current.queue.length > 0) {
-        void advanceNextRef.current();
-      } else if (queueStateRef.current.history.length > 0) {
-        void advancePrevRef.current();
+      // Kasus A: Hapus lagu yang sedang aktif diputar (Current Track)
+      const { queue, history } = queueStateRef.current;
+      if (queue.length > 0) {
+        const nextTrack = queue[0];
+        dispatchQueue({ type: "DISCARD_CURRENT_AND_ADVANCE_NEXT" });
+        void directLoadTrack(nextTrack);
+      } else if (history.length > 0) {
+        const prevTrack = history[0];
+        dispatchQueue({ type: "DISCARD_CURRENT_AND_ADVANCE_PREV" });
+        // UX POLISH (1% FIX): Saat antrean habis dan player mundur ke riwayat (Lagu C),
+        // Cukup standby di Lagu C tanpa auto-play (autoPlay = false)
+        void directLoadTrack(prevTrack, undefined, 0, false);
+        const active = getActiveAudio();
+        if (active) {
+          active.pause();
+          active.currentTime = 0;
+        }
       } else {
         clear();
       }
+    } else if (curIdx !== -1 && index < curIdx) {
+      // Kasus B: Hapus lagu dari riwayat (allTracks membalik urutan history: [lama ... baru])
+      const historyIndex = historyLen - 1 - index;
+      dispatchQueue({ type: "REMOVE_FROM_HISTORY", index: historyIndex });
     } else {
-      const filtered = all.filter((_: PlayableTrack, i: number) => i !== index);
-      masterPlaylistRef.current = filtered;
-      repeatCycleRef.current = null;
-      const curId = currentTrackRef.current?.videoId;
-      const newCurIdx = curId ? filtered.findIndex((t: PlayableTrack) => t.videoId === curId) : -1;
-      if (newCurIdx !== -1) {
-        const newHistory = filtered.slice(0, newCurIdx).reverse().slice(0, HISTORY_MAX);
-        const newQueue = filtered.slice(newCurIdx + 1);
-        dispatchQueue({
-          type: "SET_ALL_TRACKS",
-          history: newHistory,
-          queue: newQueue,
-        });
-      } else {
-        dispatchQueue({
-          type: "SET_ALL_TRACKS",
-          history: [],
-          queue: filtered,
-        });
+      // Kasus C: Hapus lagu dari antrean mendatang (queue)
+      const queueIndex = curIdx !== -1 ? index - (historyLen + 1) : index - historyLen;
+      if (queueIndex >= 0 && queueIndex < queueStateRef.current.queue.length) {
+        dispatchQueue({ type: "REMOVE", index: queueIndex });
       }
     }
-  }, [clear]);
+
+    if (masterPlaylistRef.current.length > index) {
+      masterPlaylistRef.current = masterPlaylistRef.current.filter((_, i) => i !== index);
+    }
+    repeatCycleRef.current = null;
+  }, [clear, directLoadTrack, getActiveAudio]);
 
   const clearQueue = useCallback(() => {
     clear();
@@ -1021,7 +1105,7 @@ export function useAudioEngine(): AudioEngine {
 
   const advanceNext = useCallback(async () => {
     const now = Date.now();
-    if (now - lastAdvanceTimeRef.current < 500) {
+    if (now - lastAdvanceTimeRef.current < 1500) {
       return;
     }
     lastAdvanceTimeRef.current = now;
@@ -1087,9 +1171,15 @@ export function useAudioEngine(): AudioEngine {
         dispatchQueue({ type: "ADVANCE_NEXT", current, shuffleOn, repeatMode: repeat });
         if (activeAudio) {
           activeAudio.pause();
-          activeAudio.src = "";
+          activeAudio.currentTime = 0;
         }
+        wakeLockGuardRef.current = true;
         setPlayerState("idle");
+        if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+          try {
+            navigator.mediaSession.playbackState = "none";
+          } catch { /* ignore */ }
+        }
         return;
       }
 
@@ -1231,13 +1321,13 @@ export function useAudioEngine(): AudioEngine {
         await directLoadTrack(nextTrack);
       }
     } finally {
-      setTimeout(() => {
-        isAdvancingRef.current = false;
-      }, 1000);
+      isAdvancingRef.current = false;
+      isAutoAdvancingRef.current = false;
     }
   }, [getActiveAudio, getStandbyAudio, switchActiveSlot, directLoadTrack, syncStandbyPreload, volume]);
 
   const advancePrev = useCallback(async () => {
+    wakeLockGuardRef.current = false;
     const audio = getActiveAudio();
     const cur = audio?.currentTime ?? 0;
     if (cur > 3) {
@@ -1262,6 +1352,7 @@ export function useAudioEngine(): AudioEngine {
   }, [directLoadTrack, getActiveAudio]);
 
   const playTrackAtIndex = useCallback(async (index: number) => {
+    wakeLockGuardRef.current = false;
     const all = allTracksRef.current;
     if (index < 0 || index >= all.length) return;
 
@@ -1324,6 +1415,7 @@ export function useAudioEngine(): AudioEngine {
     let pendingReloadCleanup: (() => void) | null = null;
     let lastFakeEnd: { videoId: string; pos: number } | null = null;
     let disposed = false;
+    const isAdvancing = () => Date.now() - lastAdvanceTimeRef.current < 1500;
 
     const clearStallTimer = () => {
       if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
@@ -1399,7 +1491,7 @@ export function useAudioEngine(): AudioEngine {
     /** Soft reconnect: reopen proxy stream at current position (no yt-dlp). */
     const softReconnect = async (audio: HTMLAudioElement, reason: string) => {
       const track = currentTrackRef.current;
-      if (!track || refreshingRef.current || isAdvancingRef.current) return;
+      if (!track || refreshingRef.current || isAdvancing()) return;
       clearStallTimer();
       const savedTime = audio.currentTime;
       console.warn(`[RESILIENCE] Soft reconnect (${reason}) at ${savedTime.toFixed(1)}s`);
@@ -1430,6 +1522,11 @@ export function useAudioEngine(): AudioEngine {
     };
 
     const onPlay = (e: Event) => {
+      // The Smart Guard: slap back spontaneous auto-resume from iOS when waking from Lock Screen
+      if (wakeLockGuardRef.current) {
+        (e.target as HTMLAudioElement)?.pause();
+        return;
+      }
       const standby = getStandbyAudio();
       // Standby Audio Mutelock: Immediately force pause if standby attempts unauthorized playback
       if (standby && e.target === standby && !isHandoffInProgressRef.current) {
@@ -1444,6 +1541,10 @@ export function useAudioEngine(): AudioEngine {
     };
 
     const onPlaying = (e: Event) => {
+      if (wakeLockGuardRef.current) {
+        (e.target as HTMLAudioElement)?.pause();
+        return;
+      }
       const standby = getStandbyAudio();
       // Standby Audio Mutelock: Intercept any playing event on standby outside authorized handoff
       if (standby && e.target === standby && !isHandoffInProgressRef.current) {
@@ -1455,9 +1556,7 @@ export function useAudioEngine(): AudioEngine {
         (e.target as HTMLAudioElement)?.pause();
         return;
       }
-      setTimeout(() => {
-        isAdvancingRef.current = false;
-      }, 1000);
+      isAdvancingRef.current = false;
       const audio = getActiveAudio();
       if (!audio) return;
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
@@ -1474,7 +1573,7 @@ export function useAudioEngine(): AudioEngine {
       const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
       const dur = getCanonicalDuration(meta, audio.duration);
       console.log(`[MEDIA EVENT] PAUSE (Slot ${activeAudioSlotRef.current}) | Time: ${audio.currentTime.toFixed(1)}s / ${dur.toFixed(1)}s | Paused: true`);
-      if (isAdvancingRef.current) return;
+      if (isAdvancing()) return;
 
       // Safari/WebKit fires 'pause' right before 'ended' at the end of the track.
       if (
@@ -1482,6 +1581,10 @@ export function useAudioEngine(): AudioEngine {
         (isFinite(dur) && dur > 0 && audio.currentTime >= dur - 0.8) ||
         (isFinite(audio.duration) && audio.duration > 0 && audio.currentTime >= audio.duration - 0.8)
       ) {
+        // Fallback: If Safari paused at EOF and ended event was suppressed by buffering stall, trigger advance
+        if (playerStateRef.current === "playing") {
+          void advanceNextRef.current();
+        }
         return;
       }
 
@@ -1490,14 +1593,14 @@ export function useAudioEngine(): AudioEngine {
 
     const onWaiting = (e: Event) => {
       if (e.target !== getActiveAudio()) return;
-      if (isAdvancingRef.current) return;
+      if (isAdvancing()) return;
       setPlayerState((prev) => (prev === "refreshing" ? prev : "buffering"));
       armStallWatchdog(e.target as HTMLAudioElement);
     };
 
     const onStalled = (e: Event) => {
       if (e.target !== getActiveAudio()) return;
-      if (isAdvancingRef.current) return;
+      if (isAdvancing()) return;
       const audio = e.target as HTMLAudioElement;
       // 'stalled' also fires harmlessly when buffer is full; only react when
       // playback actually lacks data.
@@ -1581,7 +1684,7 @@ export function useAudioEngine(): AudioEngine {
         return;
       }
       if (e.target !== getActiveAudio()) return;
-      if (isAdvancingRef.current) return;
+      if (isAdvancing() || isAdvancingRef.current) return;
       const audio = getActiveAudio();
       if (!audio) return;
 
@@ -1591,13 +1694,15 @@ export function useAudioEngine(): AudioEngine {
 
       // Fallback safety watchdog:
       // The browser's native 'ended' event (onEnded above) is the authoritative, precise trigger.
-      // This watchdog ONLY acts as a safety net if audio reached its full duration AND has stopped/stalled,
-      // never interrupting playback while the track is still actively playing (cur < canonicalDur).
+      // This watchdog ONLY acts as a safety net if audio reached EOF tolerance (canonicalDur - 0.8) AND has stopped/stalled,
+      // never interrupting playback while the track is still actively playing.
       if (
         isFinite(canonicalDur) &&
         canonicalDur > 5 &&
-        cur >= canonicalDur &&
-        (audio.ended || audio.paused || cur >= canonicalDur + 1.5)
+        (
+          (cur >= canonicalDur - 0.8 && (audio.ended || audio.paused)) ||
+          cur >= canonicalDur + 1.0
+        )
       ) {
         console.log(`[MEDIA EVENT] SAFETY WATCHDOG FIRED: ${cur.toFixed(1)}s / ${canonicalDur.toFixed(1)}s`);
         void advanceNextRef.current();

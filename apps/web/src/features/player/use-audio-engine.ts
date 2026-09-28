@@ -48,14 +48,31 @@ interface CachedStreamEntry {
 const clientStreamCache = new Map<string, CachedStreamEntry>();
 const inFlightStreamFetches = new Map<string, Promise<AudioStream>>();
 
+/**
+ * Accurately detects Apple iOS / iPadOS WebKit devices.
+ * Distinguishes iOS Safari / WebKit from Android Chrome, desktop browsers, etc.
+ * iPadOS 13+ reports platform 'MacIntel' with touch points > 1.
+ */
+export function checkIsIOS(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
 let _nativeHlsSupported: boolean | null = null;
 
 /**
  * Checks if the browser natively supports HLS (.m3u8) playback via standard HTML5 <audio>
  * elements (Apple WebKit: iOS Safari, macOS Safari, Chrome on iOS).
+ * On Android Chrome, canPlayType can falsely return "maybe" due to OS media framework,
+ * but HTML5 <audio> CANNOT play .m3u8 natively (stalls forever). Therefore, only Apple iOS
+ * is allowed to route to HLS.
  */
 export function isNativeHlsSupported(audio?: HTMLAudioElement | null): boolean {
   if (typeof window === "undefined") return false;
+  if (!checkIsIOS()) return false;
   if (_nativeHlsSupported !== null) return _nativeHlsSupported;
   try {
     const el = audio || new Audio();
@@ -76,7 +93,7 @@ export function isNativeHlsSupported(audio?: HTMLAudioElement | null): boolean {
  * range-stream endpoint (/api/audio/stream/:videoId).
  */
 export function getProxyStreamUrl(videoId: string, audio?: HTMLAudioElement | null): string {
-  if (isNativeHlsSupported(audio)) {
+  if (checkIsIOS() && isNativeHlsSupported(audio)) {
     return `/api/audio/hls/${encodeURIComponent(videoId)}/playlist.m3u8`;
   }
   return `/api/audio/stream/${encodeURIComponent(videoId)}`;
@@ -556,6 +573,7 @@ export function useAudioEngine(): AudioEngine {
    * tap, the standby element becomes fully authorized to autoplay later in the background.
    */
   const ensureBothUnlocked = useCallback(() => {
+    if (!checkIsIOS()) return;
     if (standbyUnlockedRef.current) return;
     const standby = getStandbyAudio();
     if (!standby) return;
@@ -587,6 +605,7 @@ export function useAudioEngine(): AudioEngine {
    * making the handoff instantaneous even with the phone locked in a pocket.
    */
   const syncStandbyPreload = useCallback((nextTrackCandidate?: PlayableTrack | null) => {
+    if (!checkIsIOS()) return;
     if (repeatModeRef.current === "one") {
       standbyPreloadedTrackRef.current = null;
       return;
@@ -647,8 +666,9 @@ export function useAudioEngine(): AudioEngine {
     console.log(`[AUDIO ENGINE] Pre-buffered track on standby (${activeAudioSlotRef.current === "A" ? "Slot B" : "Slot A"}):`, candidate.title);
   }, [getStandbyAudio]);
 
-  // Sync standby preload whenever queue or repeatMode changes
+  // Sync standby preload whenever queue or repeatMode changes (iOS only)
   useEffect(() => {
+    if (!checkIsIOS()) return;
     if (!currentTrack) return;
     if (isAutoAdvancingRef.current) return;
     syncStandbyPreload();
@@ -727,7 +747,7 @@ export function useAudioEngine(): AudioEngine {
 
     const audio = getActiveAudio();
     const standby = getStandbyAudio();
-    if (standby) {
+    if (standby && checkIsIOS()) {
       standby.pause();
       standbyPreloadedTrackRef.current = null;
       repeatCycleRef.current = null;
@@ -788,7 +808,9 @@ export function useAudioEngine(): AudioEngine {
     const nextCandidate = overrideSequence && overrideSequence.length > 1
       ? overrideSequence[1]
       : getTrueNextTrack();
-    syncStandbyPreload(nextCandidate);
+    if (checkIsIOS()) {
+      syncStandbyPreload(nextCandidate);
+    }
 
     if (cachedStream) {
       setCurrentStream(cachedStream);
@@ -897,27 +919,30 @@ export function useAudioEngine(): AudioEngine {
     const meta = currentStreamRef.current?.durationSeconds || currentTrackRef.current?.durationSeconds || 0;
     const dur = getCanonicalDuration(meta, audio.duration);
 
-    // ── Gentle Preload Hijack (Apple User Gesture Token) ─────────
+    // ── Gentle Preload Hijack (Apple User Gesture Token — iOS Only) ─────────
     // When the user interacts with the seek slider, that interaction is an authorized
     // WebKit User Gesture. We gently load the next candidate on standbyAudio without
     // destroying or removing 'src' (which breaks CoreAudio hardware decoder on iOS).
-    ensureBothUnlocked();
-    if (repeatModeRef.current !== "one") {
-      const nextCandidate = getTrueNextTrack();
-      if (nextCandidate) {
-        const standby = getStandbyAudio();
-        if (standby) {
-          const streamUrl = getProxyStreamUrl(nextCandidate.videoId);
-          standby.pause();
-          standby.loop = false;
-          standby.preload = "auto";
-          standby.src = streamUrl;
-          standby.load();
-          standby.pause(); // Mutelock: Guarantee standby stays paused
-          standbyPreloadedTrackRef.current = { videoId: nextCandidate.videoId, url: streamUrl };
-          console.log(`[PRELOAD HIJACK] Gently buffered next track: ${nextCandidate.title}`);
+    // On Android, standby preloading is strictly bypassed to protect the single active hardware decoder.
+    if (checkIsIOS()) {
+      ensureBothUnlocked();
+      if (repeatModeRef.current !== "one") {
+        const nextCandidate = getTrueNextTrack();
+        if (nextCandidate) {
+          const standby = getStandbyAudio();
+          if (standby) {
+            const streamUrl = getProxyStreamUrl(nextCandidate.videoId);
+            standby.pause();
+            standby.loop = false;
+            standby.preload = "auto";
+            standby.src = streamUrl;
+            standby.load();
+            standby.pause(); // Mutelock: Guarantee standby stays paused
+            standbyPreloadedTrackRef.current = { videoId: nextCandidate.videoId, url: streamUrl };
+            console.log(`[PRELOAD HIJACK] Gently buffered next track: ${nextCandidate.title}`);
+          }
+          void fetchStreamWithCache(nextCandidate.videoId);
         }
-        void fetchStreamWithCache(nextCandidate.videoId);
       }
     }
 
@@ -1251,11 +1276,12 @@ export function useAudioEngine(): AudioEngine {
         newQueue,
       });
 
-      // PING-PONG HANDOFF:
-      const isStandbyPreloaded = standbyPreloadedTrackRef.current?.videoId === nextTrack.videoId;
-      const standbyAudio = getStandbyAudio();
+      // PING-PONG HANDOFF (Exclusive to iOS):
+      const isIOSDevice = checkIsIOS();
+      const isStandbyPreloaded = isIOSDevice && standbyPreloadedTrackRef.current?.videoId === nextTrack.videoId;
+      const standbyAudio = isIOSDevice ? getStandbyAudio() : null;
 
-      if (standbyAudio && isStandbyPreloaded) {
+      if (isIOSDevice && standbyAudio && isStandbyPreloaded) {
         isHandoffInProgressRef.current = true;
         try {
           const { oldActive, newActive } = switchActiveSlot();

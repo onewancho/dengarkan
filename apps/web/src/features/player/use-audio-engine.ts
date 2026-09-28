@@ -204,7 +204,7 @@ export interface AudioEngineActions {
   toggle:          () => void;
   seek:            (seconds: number) => void;
   getCurrentTime:  () => number;
-  next:            () => void;
+  next:            (isManualSkip?: boolean | any) => void;
   previous:        () => void;
   setVolume:       (v: number) => void;
   toggleMute:      () => void;
@@ -468,7 +468,7 @@ export function useAudioEngine(): AudioEngine {
   const isAdvancingRef     = useRef(false);
   const lastAdvanceTimeRef = useRef(0);
   const wakeLockGuardRef   = useRef(false);
-  const advanceNextRef     = useRef<() => Promise<void>>(() => Promise.resolve());
+  const advanceNextRef     = useRef<(isManualSkip?: boolean | any) => Promise<void>>(() => Promise.resolve());
   const advancePrevRef     = useRef<() => Promise<void>>(() => Promise.resolve());
 
   // Sync refs synchronously every render
@@ -922,7 +922,7 @@ export function useAudioEngine(): AudioEngine {
     }
 
     if (isFinite(dur) && dur > 0 && seconds >= dur - 1.0) {
-      void advanceNextRef.current();
+      void advanceNextRef.current(false);
       return;
     }
 
@@ -1119,7 +1119,8 @@ export function useAudioEngine(): AudioEngine {
 
   // ── Navigation (Ping-Pong Handoff) ────────────────────────────────────────
 
-  const advanceNext = useCallback(async () => {
+  const advanceNext = useCallback(async (isManualSkip: boolean | Event | any = true) => {
+    const isManual = isManualSkip === true || (typeof isManualSkip === "object" && isManualSkip !== null);
     const now = Date.now();
     if (now - lastAdvanceTimeRef.current < 1500) {
       return;
@@ -1134,8 +1135,8 @@ export function useAudioEngine(): AudioEngine {
       const shuffleOn = shuffleOnRef.current;
       const { queue, history } = queueStateRef.current;
 
-      // 1. repeat=one → restart current track synchronously on the active element
-      if (repeat === "one" && current) {
+      // 1. repeat=one → restart current track synchronously on the active element (ONLY for auto-advancing EOF)
+      if (repeat === "one" && !isManual && current) {
         if (activeAudio) {
           activeAudio.currentTime = 0;
           try {
@@ -1614,7 +1615,7 @@ export function useAudioEngine(): AudioEngine {
       ) {
         // Fallback: If Safari paused at EOF and ended event was suppressed by buffering stall, trigger advance
         if (playerStateRef.current === "playing") {
-          void advanceNextRef.current();
+          void advanceNextRef.current(false);
         }
         return;
       }
@@ -1705,7 +1706,7 @@ export function useAudioEngine(): AudioEngine {
         return;
       }
       lastFakeEnd = null;
-      void advanceNextRef.current();
+      void advanceNextRef.current(false);
     };
 
     const onTimeUpdate = (e: Event) => {
@@ -1736,7 +1737,7 @@ export function useAudioEngine(): AudioEngine {
         )
       ) {
         console.log(`[MEDIA EVENT] SAFETY WATCHDOG FIRED: ${cur.toFixed(1)}s / ${canonicalDur.toFixed(1)}s`);
-        void advanceNextRef.current();
+        void advanceNextRef.current(false);
       }
     };
 

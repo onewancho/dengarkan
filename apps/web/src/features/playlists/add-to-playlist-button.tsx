@@ -18,7 +18,7 @@ interface Props {
 }
 
 export function AddToPlaylistButton({ track, className = "" }: Props) {
-  const { playlists, addTrackToPlaylist, createPlaylist } = usePlaylistContext();
+  const { playlists, addTrackToPlaylist, checkDuplicate, createPlaylist } = usePlaylistContext();
   const [open,      setOpen]      = useState(false);
   const [added,     setAdded]     = useState<string | null>(null); // playlist id just added to
   const [creating,  setCreating]  = useState(false);
@@ -44,6 +44,12 @@ export function AddToPlaylistButton({ track, className = "" }: Props) {
     if (isBusy) return;
     setIsBusy(true);
     try {
+      // Duplicate check: confirm with user if track already exists
+      const isDuplicate = await checkDuplicate(playlistId, track.videoId);
+      if (isDuplicate) {
+        const confirmed = window.confirm("Lagu sudah ada dalam playlist ini. Tetap tambahkan?");
+        if (!confirmed) return;
+      }
       await addTrackToPlaylist(playlistId, {
         videoId: track.videoId,
         title: track.title,

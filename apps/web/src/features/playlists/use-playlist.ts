@@ -38,6 +38,7 @@ export interface PlaylistActions {
   deletePlaylist:     (id: string) => Promise<void>;
   addTrackToActive:   (track: SearchResult) => Promise<void>;
   addTrackToPlaylist: (playlistId: string, track: SearchResult) => Promise<void>;
+  checkDuplicate:     (playlistId: string, videoId: string) => Promise<boolean>;
   removeTrack:        (trackId: string) => Promise<void>;
   reorderTracks:      (trackIds: string[]) => Promise<void>;
   moveTrackUp:        (index: number) => Promise<void>;
@@ -270,6 +271,22 @@ export function usePlaylist(): PlaylistState & PlaylistActions {
     }
   }, [showToast]);
 
+  // ── Duplicate Check ─────────────────────────────────────────────────────────
+
+  const checkDuplicate = useCallback(async (playlistId: string, videoId: string): Promise<boolean> => {
+    // If the playlist is currently open, check in-memory (zero network cost)
+    if (activePlaylistRef.current?.id === playlistId) {
+      return activeTracksRef.current.some((t) => t.videoId === videoId);
+    }
+    // Otherwise, fetch tracks from API
+    try {
+      const detail = await apiClient.playlists.get(playlistId);
+      return detail.tracks.some((t) => t.videoId === videoId);
+    } catch {
+      return false; // On error, allow adding (fail-open)
+    }
+  }, []);
+
   const addTrackToActive = useCallback(async (track: SearchResult) => {
     const pl = activePlaylistRef.current;
     if (!pl) throw new Error("No playlist open");
@@ -394,6 +411,7 @@ export function usePlaylist(): PlaylistState & PlaylistActions {
     deletePlaylist,
     addTrackToActive,
     addTrackToPlaylist,
+    checkDuplicate,
     removeTrack,
     reorderTracks,
     moveTrackUp,
